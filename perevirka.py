@@ -621,6 +621,135 @@ n.round_trip()
 check("повторний обхід мовчить", not [c for c in calls if c.startswith("send")])
 n.api = real_api
 
+block("Канал виправив уже надіслану новину")
+fresh_db()
+_e_api, _e_media, _e_sleep = n.api, n.send_media, n.time.sleep
+_calls, _mid = [], [100]
+
+
+def _fake_api(method, **kw):
+    _calls.append((method, kw))
+    if method in ("sendMessage", "sendPhoto"):
+        _mid[0] += 1
+        return {"ok": True, "message_id": _mid[0]}
+    return {"ok": True}
+
+
+def _fake_media(uid, method, field, blob, fn, mime, cap, file_id=None):
+    _calls.append((method, {"chat_id": uid, "caption": cap}))
+    _mid[0] += 1
+    n.LAST_MEDIA_MSG = _mid[0]
+    return "FILEID"
+
+
+n.api = _fake_api
+n.send_media = _fake_media
+n.time.sleep = lambda _s: None
+n.grab_photo = lambda url: b"FAKEPHOTO" if url else None
+with n.db() as c:
+    c.execute("INSERT INTO people VALUES (1,'kate',1,1)")
+    c.execute("INSERT INTO people VALUES (2,'druh',0,1)")
+
+TEXT_OLD = ("Суд визнав протиправним рішення міської ради про підвищення тарифів "
+            "на воду для мешканців Дніпра, повідомляє пресслужба суду.")
+_post = {"channel": "tgp_news", "id": 77, "text": TEXT_OLD, "photo": None,
+         "video": False, "link": "https://t.me/tgp_news/77"}
+n.broadcast(dict(_post), "Тарас Григорович")
+with n.db() as c:
+    saved = c.execute("SELECT * FROM sent").fetchall()
+    ids = c.execute("SELECT * FROM sent_msg ORDER BY user_id").fetchall()
+check("надіслане запам'ятовується", len(saved) == 1 and saved[0]["post_id"] == 77)
+check("номери повідомлень записані обом", len(ids) == 2, "рядків: %s" % len(ids))
+
+_calls[:] = []
+n.check_edits("tgp_news", [dict(_post, text=TEXT_OLD)], "Тарас Григорович")
+check("незмінений пост не чіпаємо", not _calls, "викликів: %s" % len(_calls))
+
+TEXT_NEW = ("Суд визнав ПРАВОМІРНИМ рішення міської ради про підвищення тарифів "
+            "на воду для мешканців Дніпра. Раніше в дописі була помилка.")
+_calls[:] = []
+n.check_edits("tgp_news", [dict(_post, text=TEXT_NEW)], "Тарас Григорович")
+_edits = [kw for m, kw in _calls if m == "editMessageText"]
+_notes = [kw for m, kw in _calls if m == "sendMessage"]
+check("виправлений текст замінює старий", len(_edits) == 2, "правок: %s" % len(_edits))
+check("у виправленому тексті нова редакція",
+      bool(_edits) and "ПРАВОМІРНИМ" in _edits[0].get("text", ""))
+check("читача попереджають про правку",
+      len(_notes) == 2 and all("виправив" in k.get("text", "") for k in _notes))
+check("попередження відповіддю на саму новину",
+      bool(_notes) and _notes[0].get("reply_to_message_id"))
+
+_calls[:] = []
+n.check_edits("tgp_news", [dict(_post, text=TEXT_NEW)], "Тарас Григорович")
+check("та сама правка вдруге не йде", not _calls, "викликів: %s" % len(_calls))
+
+_calls[:] = []
+n.check_edits("tgp_news", [dict(_post, text=TEXT_NEW.replace("Раніше", "Ранiше"))],
+              "Тарас Григорович")
+check("дрібну правку вносимо мовчки",
+      len([1 for m, _ in _calls if m == "editMessageText"]) == 2 and
+      not [1 for m, _ in _calls if m == "sendMessage"])
+
+check("одрук — не привід смикати читача",
+      not n.edit_is_big(TEXT_OLD, TEXT_OLD.replace("Дніпра", "Днiпра")))
+check("зміна змісту одним словом — суттєва",
+      n.edit_is_big(TEXT_OLD, TEXT_OLD.replace("протиправним", "правомірним")))
+check("повністю переписаний пост — суттєвий", n.edit_is_big(TEXT_OLD, TEXT_NEW))
+check("зайві пробіли й розділові — не правка",
+      not n.edit_is_big(TEXT_OLD, TEXT_OLD.replace(", ", ",  ") + "!"))
+check("велике дописування — суттєве",
+      n.edit_is_big(TEXT_OLD, TEXT_OLD + " " + "Додано важливу деталь. " * 4))
+
+check("номер поста беремо з посилання",
+      n.post_ref({"channel": "", "id": 0, "link": "https://t.me/babel/500"}) ==
+      ("babel", 500))
+
+# новина з картинкою: підпис правиться як підпис
+fresh_db()
+with n.db() as c:
+    c.execute("INSERT INTO people VALUES (1,'kate',1,1)")
+_ph = {"channel": "babel", "id": 12, "text": TEXT_OLD, "video": False,
+       "photo": "https://cdn4.telesco.pe/file/p.jpg", "link": "https://t.me/babel/12"}
+n.send_post(1, dict(_ph), "Бабель")
+_calls[:] = []
+n.check_edits("babel", [dict(_ph, text=TEXT_NEW)], "Бабель")
+check("у новини з картинкою правиться підпис",
+      any(m == "editMessageCaption" for m, _ in _calls),
+      ", ".join(m for m, _ in _calls) or "нічого")
+
+# старіше за EDIT_HOURS не стежимо
+with n.db() as c:
+    c.execute("UPDATE sent SET ts = ?", (int(time.time()) - 99 * 3600,))
+_calls[:] = []
+n.check_edits("babel", [dict(_ph, text=TEXT_NEW + " ще правка")], "Бабель")
+check("старі пости з-під нагляду виходять", not _calls, "викликів: %s" % len(_calls))
+with n.db() as c:
+    left = c.execute("SELECT COUNT(*) k FROM sent_msg").fetchone()["k"]
+check("хвости в базі не накопичуються", left == 0, "рядків лишилось: %s" % left)
+
+# правка, від якої змінюється кількість повідомлень
+fresh_db()
+with n.db() as c:
+    c.execute("INSERT INTO people VALUES (1,'kate',1,1)")
+_long = {"channel": "babel", "id": 33, "text": TEXT_OLD, "photo": None,
+         "video": False, "link": "https://t.me/babel/33"}
+n.send_post(1, dict(_long), "Бабель")
+_calls[:] = []
+n.check_edits("babel", [dict(_long, text=TEXT_OLD + " " + "Уточнення до новини. " * 400)],
+              "Бабель")
+_new_msgs = [kw.get("text", "") for m, kw in _calls if m == "sendMessage"]
+check("новина розрослась — шлемо виправлену окремо",
+      any("ВИПРАВЛЕНО" in t for t in _new_msgs),
+      "повідомлень: %s" % len(_new_msgs))
+check("на місці таку правку не вносимо",
+      not [1 for m, _ in _calls if m == "editMessageText"])
+
+# розмітка змінилась, слова ті самі — це не виправлення
+check("інші теги при тих самих словах — не правка",
+      n.text_hash("<b>Суд</b> ухвалив рішення") == n.text_hash("<i>Суд</i> ухвалив рішення"))
+
+n.api, n.send_media, n.time.sleep = _e_api, _e_media, _e_sleep
+
 block("Живі канали")
 alive = dead = 0
 for ch in config.SOURCES:

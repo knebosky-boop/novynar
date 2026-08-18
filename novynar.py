@@ -6,6 +6,7 @@
 """
 
 import html as html_mod
+import difflib
 import hashlib
 import logging
 import os
@@ -77,6 +78,15 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             channel TEXT, title TEXT, link TEXT, text TEXT, photo TEXT, ts INTEGER
         );
+        CREATE TABLE IF NOT EXISTS sent (
+            channel TEXT, post_id INTEGER, title TEXT, hash TEXT,
+            body TEXT, suffix TEXT, first_limit INTEGER, ts INTEGER,
+            PRIMARY KEY (channel, post_id)
+        );
+        CREATE TABLE IF NOT EXISTS sent_msg (
+            channel TEXT, post_id INTEGER, user_id INTEGER,
+            message_id INTEGER, part INTEGER, kind TEXT
+        );
         CREATE TABLE IF NOT EXISTS people (
             user_id  INTEGER PRIMARY KEY,
             username TEXT,
@@ -97,6 +107,7 @@ def migrate():
     і не перестворюється при оновленні програми."""
     wanted = {
         "recent": [("anchors", "TEXT")],
+        "sent": [("body", "TEXT"), ("suffix", "TEXT"), ("first_limit", "INTEGER")],
         "sources": [("title", "TEXT"), ("last_id", "INTEGER DEFAULT 0")],
         "people": [("username", "TEXT"), ("is_owner", "INTEGER DEFAULT 0")],
     }
@@ -680,6 +691,7 @@ def grab_video(url):
 
 def send_media(uid, method, field, blob, filename, mime, caption, file_id=None):
     """Надсилаємо файл. Повертає file_id — щоб решті читачів не качати знову."""
+    global LAST_MEDIA_MSG
     for attempt in range(2):
         try:
             if file_id:
@@ -696,6 +708,7 @@ def send_media(uid, method, field, blob, filename, mime, caption, file_id=None):
             j = r.json()
             if j.get("ok"):
                 res = j["result"]
+                LAST_MEDIA_MSG = res.get("message_id")
                 got = res.get(field) or res.get("document")
                 if isinstance(got, list):
                     got = got[-1]
@@ -886,8 +899,186 @@ def close_tags(s):
     return s + "".join("</%s>" % t for t in reversed(opened))
 
 
+# ───────────────  канал виправив уже надіслану новину  ───────────────
+
+LAST_MEDIA_MSG = None       # номер останнього повідомлення з файлом
+
+
+def plain(text):
+    """Сам текст без розмітки: Telegram час від часу віддає ті самі слова
+    трохи іншими тегами, а це не виправлення каналу."""
+    return norm(re.sub(r"<[^>]+>", " ", text or ""))
+
+
+def text_hash(text):
+    """Відбиток тексту поста — за ним бачимо, що канал його переписав."""
+    return hashlib.sha1(plain(text).encode("utf-8")).hexdigest()
+
+
+def post_ref(post):
+    """(канал, номер поста). Відлежаний сюжет номера не несе — беремо з посилання."""
+    ch = post.get("channel") or ""
+    pid = int(post.get("id") or 0)
+    m = re.search(r"t\.me/([^/]+)/(\d+)", post.get("link") or "")
+    if m:
+        ch = ch or m.group(1)
+        pid = pid or int(m.group(2))
+    return ch, pid
+
+
+def video_mark(post):
+    """Позначка «відео за посиланням», яку дописуємо в кінець тексту."""
+    if not post.get("video"):
+        return ""
+    if post.get("duration"):
+        return "\n\n🎬 <i>відео (%s) — за посиланням нижче</i>" % post["duration"]
+    return "\n\n🎬 <i>відео — за посиланням нижче</i>"
+
+
+def remember_sent(post, title, uid, msgs, body="", first_limit=4096, suffix=""):
+    """Запам'ятовуємо, чим саме віддали новину — щоб донести правку каналу."""
+    if not getattr(config, "WATCH_EDITS", True):
+        return
+    ch, pid = post_ref(post)
+    if not pid or not msgs:
+        return
+    now = int(time.time())
+    with db() as c:
+        c.execute("INSERT OR REPLACE INTO sent "
+                  "(channel, post_id, title, hash, body, suffix, first_limit, ts) "
+                  "VALUES (?,?,?,?,?,?,?,?)",
+                  (ch, pid, title, text_hash(post.get("text")), body, suffix,
+                   int(first_limit), now))
+        c.execute("DELETE FROM sent_msg WHERE channel = ? AND post_id = ? AND user_id = ?",
+                  (ch, pid, uid))
+        for mid, kind, part in msgs:
+            c.execute("INSERT INTO sent_msg "
+                      "(channel, post_id, user_id, message_id, part, kind) "
+                      "VALUES (?,?,?,?,?,?)", (ch, pid, uid, mid, part, kind))
+
+
+def edit_is_big(old, new):
+    """Чи це справжнє виправлення, а не прибрана кома.
+
+    Дрібницю правимо мовчки: у тексті вона з'явиться, але читача не смикаємо.
+    Рахуємо по знаках, а не по словах: у короткій новині одне слово — це вже
+    шоста частина тексту, а «протиправним» замість «правомірним» саме одним
+    словом і робиться."""
+    a, b = plain(old), plain(new)
+    if a == b:
+        return False
+    if abs(len(b) - len(a)) >= getattr(config, "EDIT_NOTE_CHARS", 60):
+        return True
+    ratio = difflib.SequenceMatcher(None, a, b).ratio()
+    return ratio < getattr(config, "EDIT_NOTE_RATIO", 0.97)
+
+
+def push_edit(row, post, title):
+    """Доводимо виправлення до тих, кому новина вже пішла."""
+    with db() as c:
+        msgs = [dict(r) for r in c.execute(
+            "SELECT * FROM sent_msg WHERE channel = ? AND post_id = ? "
+            "ORDER BY user_id, part", (row["channel"], row["post_id"]))]
+    if not msgs:
+        return False
+
+    body = ((post.get("text") or "") + (row["suffix"] or "")).strip()
+    parts = split_messages(title, body, post["link"],
+                           first_limit=int(row["first_limit"] or 4096))
+    big = edit_is_big(row["body"] or "", body)
+
+    by_user = {}
+    for m in msgs:
+        by_user.setdefault(m["user_id"], []).append(m)
+
+    done = 0
+    for uid, mine in by_user.items():
+        mine.sort(key=lambda m: m["part"])
+        # Правимо на місці лише тоді, коли частин рівно стільки ж:
+        # інакше кінець новини лишиться від старої версії.
+        fixed_in_place = len(parts) == len(mine)
+        if fixed_in_place:
+            for m, chunk in zip(mine, parts):
+                if m["kind"] == "caption":
+                    res = api("editMessageCaption", chat_id=uid,
+                              message_id=m["message_id"], caption=chunk,
+                              parse_mode="HTML")
+                else:
+                    res = api("editMessageText", chat_id=uid,
+                              message_id=m["message_id"], text=chunk,
+                              parse_mode="HTML", disable_web_page_preview=True)
+                if res is None:
+                    fixed_in_place = False
+                    break
+                time.sleep(0.3)
+
+        if fixed_in_place:
+            if big:
+                api("sendMessage", chat_id=uid,
+                    text="✏️ <b>Канал виправив цю новину</b> — текст вище оновлено.",
+                    parse_mode="HTML", disable_web_page_preview=True,
+                    reply_to_message_id=mine[0]["message_id"],
+                    allow_sending_without_reply=True)
+            done += 1
+        elif big:
+            # На місці не вийшло (інша кількість частин або застаре
+            # повідомлення) — шлемо виправлену новину окремо.
+            again = split_messages("✏️ ВИПРАВЛЕНО · " + short_title(title),
+                                   body, post["link"], first_limit=4096)
+            for j, chunk in enumerate(again):
+                if api("sendMessage", chat_id=uid, text=chunk, parse_mode="HTML",
+                       disable_web_page_preview=True,
+                       reply_to_message_id=mine[0]["message_id"],
+                       allow_sending_without_reply=True):
+                    done += 1 if j == 0 else 0
+                time.sleep(0.4)
+        time.sleep(config.SEND_DELAY)
+    return done > 0
+
+
+def check_edits(channel, posts, title=""):
+    """Звіряємо надіслані пости з тим, що зараз у каналі."""
+    if not getattr(config, "WATCH_EDITS", True):
+        return 0
+    hours = int(getattr(config, "EDIT_HOURS", 24))
+    now = int(time.time())
+    with db() as c:
+        c.execute("DELETE FROM sent_msg WHERE EXISTS (SELECT 1 FROM sent s "
+                  "WHERE s.channel = sent_msg.channel AND s.post_id = sent_msg.post_id "
+                  "AND s.ts < ?)", (now - hours * 3600,))
+        c.execute("DELETE FROM sent WHERE ts < ?", (now - hours * 3600,))
+        watched = {r["post_id"]: dict(r) for r in
+                   c.execute("SELECT * FROM sent WHERE channel = ?", (channel,))}
+    if not watched:
+        return 0
+
+    fixed = 0
+    for post in posts:
+        row = watched.get(post.get("id"))
+        if not row:
+            continue
+        new_hash = text_hash(post.get("text"))
+        if new_hash == row["hash"]:
+            continue
+        body = ((post.get("text") or "") + (row["suffix"] or "")).strip()
+        big = edit_is_big(row["body"] or "", body)
+        log.info("%s/%s: канал виправив пост (%s)", channel, post["id"],
+                 "суттєво" if big else "дрібниця")
+        try:
+            if push_edit(row, post, title or row["title"]):
+                fixed += 1
+        except Exception as e:
+            log.warning("виправлення %s/%s не пішло: %s", channel, post["id"], e)
+        with db() as c:
+            c.execute("UPDATE sent SET hash = ?, body = ? WHERE channel = ? AND post_id = ?",
+                      (new_hash, body, channel, post["id"]))
+    return fixed
+
+
 def send_post(uid, post, title):
+    global LAST_MEDIA_MSG
     body = post["text"] or ""
+    msgs = []                      # чим саме віддали новину: номери повідомлень
 
     # 1) справжнє відео, якщо дістали
     if post.get("video") and not post.get("video_url") and "_novideo" not in post:
@@ -904,6 +1095,7 @@ def send_post(uid, post, title):
             method, field = ("sendAnimation", "animation") if post.get("gif") \
                 else ("sendVideo", "video")
             parts = split_messages(title, body, post["link"], first_limit=1024)
+            LAST_MEDIA_MSG = None
             fid = send_media(uid, method, field, post.get("_vblob"),
                              "news.mp4", "video/mp4", parts[0],
                              file_id=post.get("_vid_id"))
@@ -911,21 +1103,25 @@ def send_post(uid, post, title):
                 if fid:
                     post["_vid_id"] = fid
                     post["_vblob"] = None      # далі шлемо за посиланням Telegram
+                if LAST_MEDIA_MSG:
+                    msgs.append((LAST_MEDIA_MSG, "caption", 0))
                 for i, chunk in enumerate(parts[1:]):
-                    if not api("sendMessage", chat_id=uid, text=chunk, parse_mode="HTML",
-                               disable_web_page_preview=True):
+                    res = api("sendMessage", chat_id=uid, text=chunk, parse_mode="HTML",
+                              disable_web_page_preview=True)
+                    if not res:
                         return False
+                    if isinstance(res, dict) and res.get("message_id"):
+                        msgs.append((res["message_id"], "text", i + 1))
                     time.sleep(0.4)
+                remember_sent(post, title, uid, msgs, body=body, first_limit=1024)
                 return True
             log.info("відео не пішло — пробую обкладинку")
             post["_novideo"] = True
 
     # 2) не вийшло — обкладинка чи просто текст
-    if post.get("video"):
-        mark = "🎬 <i>відео — за посиланням нижче</i>"
-        if post.get("duration"):
-            mark = "🎬 <i>відео (%s) — за посиланням нижче</i>" % post["duration"]
-        body = (body + "\n\n" + mark).strip()
+    suffix = video_mark(post)
+    if suffix:
+        body = (body + suffix).strip()
 
     blob = None
     if post["photo"] and not post.get("_ph_id"):
@@ -933,27 +1129,38 @@ def send_post(uid, post, title):
         if blob:
             post["_blob"] = blob
 
-    parts = split_messages(title, body, post["link"],
-                           first_limit=1024 if (blob or post.get("_ph_id")) else 4096)
+    first_limit = 1024 if (blob or post.get("_ph_id")) else 4096
+    parts = split_messages(title, body, post["link"], first_limit=first_limit)
 
+    base = 0
     if blob or post.get("_ph_id"):
+        LAST_MEDIA_MSG = None
         fid = send_media(uid, "sendPhoto", "photo", blob, "news.jpg", "image/jpeg",
                          parts[0], file_id=post.get("_ph_id"))
         if fid is None:
             log.info("фото не пішло — шлю самим текстом")
+            first_limit = 4096
             parts = split_messages(title, body, post["link"], first_limit=4096)
         else:
             if fid:
                 post["_ph_id"] = fid
                 post["_blob"] = None
+            if LAST_MEDIA_MSG:
+                msgs.append((LAST_MEDIA_MSG, "caption", 0))
             parts = parts[1:]
+            base = 1
 
     for i, chunk in enumerate(parts):
-        if not api("sendMessage", chat_id=uid, text=chunk, parse_mode="HTML",
-                   disable_web_page_preview=True):
+        res = api("sendMessage", chat_id=uid, text=chunk, parse_mode="HTML",
+                  disable_web_page_preview=True)
+        if not res:
             return False
+        if isinstance(res, dict) and res.get("message_id"):
+            msgs.append((res["message_id"], "text", base + i))
         if i + 1 < len(parts):
             time.sleep(0.4)
+    remember_sent(post, title, uid, msgs, body=body, first_limit=first_limit,
+                  suffix=suffix)
     return True
 
 
@@ -1034,6 +1241,12 @@ def round_trip():
         if title != src["title"]:
             with db() as c:
                 c.execute("UPDATE sources SET title = ? WHERE channel = ?", (title, ch))
+
+        # Канал міг виправити вже надісланий пост — доводимо правку читачам.
+        try:
+            check_edits(ch, posts, title)
+        except Exception as e:
+            log.warning("перевірка виправлень у %s зірвалась: %s", ch, e)
 
         fresh = [p for p in posts if p["id"] > (src["last_id"] or 0)]
         if not fresh:
