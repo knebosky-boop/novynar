@@ -777,6 +777,14 @@ def broadcast(post, title):
     return True
 
 
+def bump_unread():
+    """Рахуємо, скільки новин пішло від останнього нагадування."""
+    try:
+        set_state("unread", int(get_state("unread", 0) or 0) + 1)
+    except ValueError:
+        set_state("unread", 1)
+
+
 def enqueue(post, title):
     with db() as c:
         c.execute("INSERT INTO queue (channel, title, link, text, photo, ts) "
@@ -812,6 +820,8 @@ def flush_queue(reason=""):
             api("sendMessage", chat_id=p["user_id"], text=ch,
                 parse_mode="HTML", disable_web_page_preview=True)
             time.sleep(config.SEND_DELAY)
+    for _ in rows:
+        bump_unread()
     log.info("зведення: %s постів у %s повідомленнях", len(rows), len(chunks))
     return len(rows)
 
@@ -878,14 +888,6 @@ def round_trip():
         with db() as c:
             c.execute("UPDATE sources SET last_id = ? WHERE channel = ?",
                       (max(p["id"] for p in fresh), ch))
-
-
-def bump_unread():
-    """Рахуємо, скільки новин пішло від останнього нагадування."""
-    try:
-        set_state("unread", int(get_state("unread", 0) or 0) + 1)
-    except ValueError:
-        set_state("unread", 1)
 
 
 def maybe_remind():

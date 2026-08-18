@@ -296,29 +296,29 @@ block("Нагадування «є що почитати»")
 fresh_db()
 with n.db() as c:
     c.execute("INSERT INTO people VALUES (111,'kate',1,1)")
-    c.execute("INSERT INTO people VALUES (222,'druh',0,1)")
+    c.execute("INSERT INTO people VALUES (129576564,'',0,1)")
 _sent = []
 _real_api = n.api
 n.api = lambda m, **kw: _sent.append((kw.get("chat_id"), kw.get("text", ""),
                                       kw.get("disable_notification"))) or {"ok": True}
 _real_dt = dt.datetime
 class _T(_real_dt):
-    H, M = 9, 30
+    H, M = 7, 30
     @classmethod
     def now(cls, tz=None): return _real_dt(2026, 8, 18, cls.H, cls.M)
 n.datetime = _T
 config.QUIET_HOURS = (23, 8)
-config.REMINDER_TIMES = ["10:00", "19:00"]
+config.REMINDER_TIMES = ["08:00", "20:00"]
 
-_T.H, _T.M = 9, 30; n.maybe_remind()
+_T.H, _T.M = 7, 30; n.maybe_remind()
 check("до часу мовчить", not _sent)
-_T.H, _T.M = 10, 2; n.maybe_remind()
+_T.H, _T.M = 8, 2; n.maybe_remind()
 check("час настав, новин нема — не турбує", not _sent)
 for _ in range(7):
     n.bump_unread()
-_T.H, _T.M = 10, 8; _sent[:] = []; n.maybe_remind()
+_T.H, _T.M = 8, 8; _sent[:] = []; n.maybe_remind()
 check("новини зʼявились — нагадало", len(_sent) == 1)
-check("нагадування лише читачам, не власниці", _sent and _sent[0][0] == 222)
+check("нагадування лише читачам, не власниці", _sent and _sent[0][0] == 129576564)
 check("нагадування зі звуком", _sent and _sent[0][2] is False)
 check("названо кількість новин", _sent and "7 новин" in _sent[0][1])
 check("звертається на ім'я", _sent and "Микола" in _sent[0][1],
@@ -326,7 +326,7 @@ check("звертається на ім'я", _sent and "Микола" in _sent[0
 _sent[:] = []; n.maybe_remind()
 check("двічі не нагадує", not _sent)
 n.bump_unread(); n.bump_unread()
-_T.H, _T.M = 19, 4; _sent[:] = []; n.maybe_remind()
+_T.H, _T.M = 20, 4; _sent[:] = []; n.maybe_remind()
 check("ввечері нагадує знову", len(_sent) == 1)
 check("лічильник почався заново", _sent and "2 новини" in _sent[0][1])
 config.REMINDER_TIMES = ["02:00"]; _T.H, _T.M = 2, 1; _sent[:] = []
@@ -338,7 +338,7 @@ config.REMINDER_TIMES = []; _T.H, _T.M = 12, 0; _sent[:] = []; n.maybe_remind()
 check("порожній список — нагадувань немає", not _sent)
 n.datetime = _real_dt
 n.api = _real_api
-config.REMINDER_TIMES = ["10:00", "19:00"]
+config.REMINDER_TIMES = ["08:00", "20:00"]
 
 block("Імена і відмінювання")
 check("друга звати за іменем", n.person_name(129576564, "") == "Микола")
