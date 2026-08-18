@@ -171,6 +171,11 @@ def word_in(low, key):
     return k in low
 
 
+def starts_word(low, stem):
+    """Шукаємо основу з початку слова: «гази» не сховається в «магазині»."""
+    return re.search(r"(?<![\w'’-])" + re.escape(stem), low) is not None
+
+
 NOISE_WORDS = {
     "який", "яка", "яке", "які", "цього", "цьому", "також", "після", "через",
     "щодо", "тому", "того", "буде", "було", "були", "може", "мають", "має",
@@ -344,14 +349,15 @@ def is_alert(text):
         return False
     low = (text or "").lower()
 
-    hits = [m for m in config.ALERT_MARKERS if m in low]
+    hits = [m for m in config.ALERT_MARKERS if starts_word(low, m)]
     if hits and not (len(low) > 600 and len(hits) < 3):
         return hits[0]
 
-    soft = [m for m in getattr(config, "LIVE_ATTACK_MARKERS", []) if m in low]
+    soft = [m for m in getattr(config, "LIVE_ATTACK_MARKERS", [])
+            if starts_word(low, m)]
     if soft and len(low) <= getattr(config, "LIVE_ATTACK_MAX_LEN", 400):
         # «збили 42 шахеди минулої ночі» — це підсумок, а не сигнал тривоги
-        if any(w in low for w in getattr(config, "NEWS_MARKERS", [])):
+        if any(starts_word(low, w) for w in getattr(config, "NEWS_MARKERS", [])):
             return False
         return soft[0]
     return False
@@ -364,11 +370,6 @@ def is_service(text):
         if re.search(pat, raw, re.I):
             return True
     return False
-
-
-def starts_word(low, stem):
-    """Шукаємо основу з початку слова: «гази» не сховається в «магазині»."""
-    return re.search(r"(?<![\w'’-])" + re.escape(stem), low) is not None
 
 
 def off_topic(low, channel):
@@ -398,7 +399,7 @@ def passes_filters(text, has_media, channel=None):
     if marker:
         return False, "оперативка («%s»)" % marker
     for w in config.STOP_WORDS:
-        if w.lower() in low:          # точно, без обрізання основи
+        if starts_word(low, w.lower()):     # з початку слова, без обрізання основи
             return False, "стоп-слово «%s»" % w
     if config.KEYWORDS and not any(word_in(low, k) for k in config.KEYWORDS):
         return False, "немає ключових слів"
