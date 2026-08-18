@@ -385,6 +385,18 @@ def off_topic(low, channel):
     return hit
 
 
+def is_fundraising(text):
+    """Прохання грошей: збір на канал, номер картки, банка, PayPal.
+
+    Стоп-слова ловлять лише точну підстроку, а прохання пишуть як завгодно —
+    тому тут візерунки. Повертає сам візерунок, що спрацював, або None."""
+    low = (text or "").lower()
+    for pat in getattr(config, "MONEY_PATTERNS", []):
+        if re.search(pat, low, re.IGNORECASE):
+            return pat
+    return None
+
+
 def passes_filters(text, has_media, channel=None):
     if is_service(text):
         return False, "службова позначка"
@@ -398,6 +410,9 @@ def passes_filters(text, has_media, channel=None):
     marker = is_alert(text)
     if marker:
         return False, "оперативка («%s»)" % marker
+    money = is_fundraising(text)
+    if money:
+        return False, "збір грошей"
     for w in config.STOP_WORDS:
         if starts_word(low, w.lower()):     # з початку слова, без обрізання основи
             return False, "стоп-слово «%s»" % w
