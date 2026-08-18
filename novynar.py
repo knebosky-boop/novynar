@@ -961,20 +961,25 @@ def bootstrap_people():
 
 def once():
     """Один прохід: розібрати команди, обійти канали, віддати відлежане."""
-    fresh_start = get_state("offset") is None
     upd = api("getUpdates", offset=int(get_state("offset", 0) or 0), timeout=0) or []
-    if fresh_start and upd:
-        set_state("offset", upd[-1]["update_id"] + 1)
-        log.info("перший запуск — %s старих команд пропускаю", len(upd))
-    else:
-        for u in upd:
-            set_state("offset", u["update_id"] + 1)
-            msg = u.get("message") or u.get("edited_message")
-            if msg:
-                try:
-                    handle_command(msg)
-                except Exception as e:
-                    log.error("команда впала: %s", e)
+    now = time.time()
+    stale = 0
+    for u in upd:
+        set_state("offset", u["update_id"] + 1)
+        msg = u.get("message") or u.get("edited_message")
+        if not msg:
+            continue
+        # Дуже старі команди (доба й більше) не виконуємо: могли накопичитись,
+        # поки бот стояв. Свіжі — обробляємо завжди, навіть після втрати пам'яті.
+        if now - float(msg.get("date") or now) > 86400:
+            stale += 1
+            continue
+        try:
+            handle_command(msg)
+        except Exception as e:
+            log.error("команда впала: %s", e)
+    if stale:
+        log.info("пропущено застарілих команд: %s", stale)
     round_trip()
     if config.HOLD_MINUTES:
         release_ready()
