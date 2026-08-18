@@ -511,6 +511,12 @@ def person_name(user_id, username=""):
     return str(user_id)
 
 
+def person_voc(user_id, username=""):
+    """Кличний відмінок: «Миколко». Без нього — звичайне ім'я."""
+    voc = getattr(config, "NAMES_VOCATIVE", {}).get(int(user_id or 0))
+    return voc or person_name(user_id, username).lstrip("@")
+
+
 def drop_reader(chat_id, why=""):
     """Людина заблокувала бота або видалила себе — знімаємо з потоку,
     щоб не гримати в зачинені двері. Повернеться командою /start."""
@@ -920,15 +926,17 @@ def maybe_remind():
 
         word = "новина" if unread % 10 == 1 and unread % 100 != 11 else (
             "новини" if 2 <= unread % 10 <= 4 and not 12 <= unread % 100 <= 14 else "новин")
-        tpl = getattr(config, "REMINDER_TEXT",
-                      "📬 <b>{name}, зайди почитати новини</b>\n\n"
-                      "Від минулого разу назбиралося {count} {word}.")
+        tpl = getattr(config, "REMINDER_TEXTS", {}).get(t) or getattr(
+            config, "REMINDER_TEXT",
+            "📬 <b>{name}, зайди почитати новини</b>\n\nНазбиралося {count} {word}.")
         for p in readers():
             if p["is_owner"] and not getattr(config, "REMINDER_OWNER", False):
                 continue
             name = person_name(p["user_id"], p["username"]).lstrip("@")
             api("sendMessage", chat_id=p["user_id"],
-                text=tpl.format(name=html_mod.escape(name), count=unread, word=word),
+                text=tpl.format(name=html_mod.escape(name),
+                                voc=html_mod.escape(person_voc(p["user_id"], p["username"])),
+                                count=unread, word=word),
                 parse_mode="HTML", disable_notification=False)
             time.sleep(config.SEND_DELAY)
         log.info("нагадування розіслано (%s новин)", unread)
