@@ -300,7 +300,7 @@ def passes_filters(text, has_media):
     if marker:
         return False, "оперативка («%s»)" % marker
     for w in config.STOP_WORDS:
-        if word_in(low, w):
+        if w.lower() in low:          # точно, без обрізання основи
             return False, "стоп-слово «%s»" % w
     if config.KEYWORDS and not any(word_in(low, k) for k in config.KEYWORDS):
         return False, "немає ключових слів"
@@ -792,6 +792,10 @@ def handle_owner_command(chat, cmd, arg):
             title, posts = fetch_channel(ch)
         except Exception as e:
             reply(chat, "Не дістаю такий канал: <code>%s</code>" % html_mod.escape(str(e)))
+            return
+        if not posts:
+            reply(chat, "За адресою <b>@%s</b> постів не видно. Буває, коли канал "
+                        "закритий, порожній або в назві помилка." % html_mod.escape(ch))
             return
         with db() as c:
             c.execute("INSERT OR REPLACE INTO sources "
