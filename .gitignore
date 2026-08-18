@@ -1,0 +1,14 @@
+.venv/
+temp/
+*.session
+*.session-journal
+novynar.db
+*.log
+secret.py
+*.pid
+launchd.*
+ua.novynar.plist
+start.command
+perenesty.sh
+server/
+ORACLE_*

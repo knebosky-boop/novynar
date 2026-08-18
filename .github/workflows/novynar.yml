@@ -1,0 +1,52 @@
+name: Новинар
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"      # кожні 10 хвилин
+  workflow_dispatch:             # і кнопка «запустити зараз»
+
+concurrency:
+  group: novynar
+  cancel-in-progress: false
+
+jobs:
+  obhid:
+    name: Обхід каналів
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Залежності
+        run: pip install -q -r requirements.txt
+
+      - name: Згадати, на чому спинились
+        uses: actions/cache/restore@v4
+        with:
+          path: novynar.db
+          key: novynar-db-${{ github.run_id }}
+          restore-keys: novynar-db-
+
+      - name: Обійти канали і роздати новини
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          NOVYNAR_OWNER: ${{ secrets.NOVYNAR_OWNER }}
+          NOVYNAR_READERS: ${{ secrets.NOVYNAR_READERS }}
+          TZ: Europe/Kyiv
+        run: python novynar.py --once
+
+      - name: Запам'ятати
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: novynar.db
+          key: novynar-db-${{ github.run_id }}
+
+      - name: Журнал
+        if: always()
+        run: tail -40 novynar.log || true
