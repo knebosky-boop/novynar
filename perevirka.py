@@ -321,6 +321,8 @@ check("новини зʼявились — нагадало", len(_sent) == 1)
 check("нагадування лише читачам, не власниці", _sent and _sent[0][0] == 222)
 check("нагадування зі звуком", _sent and _sent[0][2] is False)
 check("названо кількість новин", _sent and "7 новин" in _sent[0][1])
+check("звертається на ім'я", _sent and "Микола" in _sent[0][1],
+      re.sub(r"<[^>]+>", "", _sent[0][1]).replace("\n", " ")[:56] if _sent else "")
 _sent[:] = []; n.maybe_remind()
 check("двічі не нагадує", not _sent)
 n.bump_unread(); n.bump_unread()
@@ -337,6 +339,16 @@ check("порожній список — нагадувань немає", not _
 n.datetime = _real_dt
 n.api = _real_api
 config.REMINDER_TIMES = ["10:00", "19:00"]
+
+block("Імена і відмінювання")
+check("друга звати за іменем", n.person_name(129576564, "") == "Микола")
+check("без імені — юзернейм", n.person_name(999, "petro") == "@petro")
+check("без нічого — номер", n.person_name(777, "") == "777")
+for _cnt, _want in [(1, "новина"), (2, "новини"), (5, "новин"), (11, "новин"),
+                    (21, "новина"), (23, "новини"), (105, "новин")]:
+    _w = "новина" if _cnt % 10 == 1 and _cnt % 100 != 11 else (
+        "новини" if 2 <= _cnt % 10 <= 4 and not 12 <= _cnt % 100 <= 14 else "новин")
+    check("%s → %s" % (_cnt, _want), _w == _want)
 
 block("Хто пройде в бота")
 fresh_db()

@@ -501,6 +501,16 @@ def fetch_channel(channel):
 
 # ─────────────────────────────  надсилання  ─────────────────────────────
 
+def person_name(user_id, username=""):
+    """Ім'я людини для сповіщень: спершу з налаштувань, тоді юзернейм, тоді номер."""
+    name = getattr(config, "NAMES", {}).get(int(user_id or 0))
+    if name:
+        return name
+    if username:
+        return "@" + username
+    return str(user_id)
+
+
 def drop_reader(chat_id, why=""):
     """Людина заблокувала бота або видалила себе — знімаємо з потоку,
     щоб не гримати в зачинені двері. Повернеться командою /start."""
@@ -511,7 +521,7 @@ def drop_reader(chat_id, why=""):
         if not row:
             return
         c.execute("UPDATE people SET active = 0 WHERE user_id = ?", (chat_id,))
-    who = ("@" + row["username"]) if row["username"] else str(chat_id)
+    who = person_name(chat_id, row["username"])
     log.warning("знято з потоку %s: %s", who, why[:60])
     if o and str(o["user_id"]) != str(chat_id):
         try:
@@ -906,14 +916,17 @@ def maybe_remind():
         set_state(key, "1")
         set_state("unread", 0)
 
-        o = owner()
-        word = "новина" if unread == 1 else ("новини" if 2 <= unread <= 4 else "новин")
-        text = ("📬 <b>Є що почитати</b>\n\nВід минулого разу надійшло "
-                "<b>%s %s</b>. Загляньте, коли буде час." % (unread, word))
+        word = "новина" if unread % 10 == 1 and unread % 100 != 11 else (
+            "новини" if 2 <= unread % 10 <= 4 and not 12 <= unread % 100 <= 14 else "новин")
+        tpl = getattr(config, "REMINDER_TEXT",
+                      "📬 <b>{name}, зайди почитати новини</b>\n\n"
+                      "Від минулого разу назбиралося {count} {word}.")
         for p in readers():
             if p["is_owner"] and not getattr(config, "REMINDER_OWNER", False):
                 continue
-            api("sendMessage", chat_id=p["user_id"], text=text,
+            name = person_name(p["user_id"], p["username"]).lstrip("@")
+            api("sendMessage", chat_id=p["user_id"],
+                text=tpl.format(name=html_mod.escape(name), count=unread, word=word),
                 parse_mode="HTML", disable_notification=False)
             time.sleep(config.SEND_DELAY)
         log.info("нагадування розіслано (%s новин)", unread)
@@ -1009,7 +1022,7 @@ def handle_command(msg):
                 reply(chat, "Готово! 🎉 Новини приходитимуть сюди самі.\n\n"
                             "Набридне — напиши /stop, повернутись — /start.")
                 log.info("за перепусткою підключився @%s (%s)", uname, uid)
-                who = ("@" + uname) if uname else str(uid)
+                who = person_name(uid, uname)
                 reply(o["user_id"], "✅ <b>%s</b> підключився за посиланням. "
                                     "Нічого робити не треба."
                       % html_mod.escape(who))
@@ -1019,7 +1032,7 @@ def handle_command(msg):
         if not is_allowed(uid, uname):
             reply(chat, "Цей бот приватний. Якщо це помилка — напишіть власниці.")
             log.warning("чужий стукав: @%s (%s)", uname, uid)
-            who = ("@" + uname) if uname else str(uid)
+            who = person_name(uid, uname)
             reply(o["user_id"], "🔔 У бота стукав <b>%s</b> (<code>%s</code>).\n"
                                 "Свій — впустіть: <code>/allow %s</code>"
                   % (html_mod.escape(who), uid, who))
@@ -1045,11 +1058,13 @@ def handle_command(msg):
         srcs = sources()
         with db() as c:
             q = c.execute("SELECT COUNT(*) n FROM queue").fetchone()["n"]
+        folks = ", ".join("ви" if p["is_owner"]
+                          else html_mod.escape(person_name(p["user_id"], p["username"]))
+                          for p in readers()) or "нікого"
         reply(chat, "<b>Новинар живий.</b>\nРежим: <code>%s</code>%s\n"
-                    "Каналів: %s | Читачів: %s | У черзі: %s\n\n%s"
-              % (config.MODE, "  ⏸ пауза" if paused else "", len(srcs),
-                 len(readers()), q,
-                 "\n".join("• %s" % html_mod.escape(s["title"] or s["channel"])
+                    "Каналів: %s | У черзі: %s\nОтримують: %s\n\n%s"
+              % (config.MODE, "  ⏸ пауза" if paused else "", len(srcs), q, folks,
+                 "\n".join("• %s" % html_mod.escape(short_title(s["title"] or s["channel"]))
                            for s in srcs) or "— порожньо —"))
 
     elif cmd == "/digest":
