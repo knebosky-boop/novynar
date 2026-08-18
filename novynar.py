@@ -698,6 +698,28 @@ def handle_command(msg):
                         "/help — усі команди")
             log.info("власниця: @%s (%s)", uname, uid)
             return
+        code = getattr(config, "INVITE_CODE", "")
+        if code and arg.strip() == code and not is_allowed(uid, uname):
+            with db() as c:
+                used = c.execute("SELECT COUNT(*) n FROM people "
+                                 "WHERE is_owner = 0").fetchone()["n"]
+            if used < getattr(config, "INVITE_LIMIT", 2):
+                with db() as c:
+                    c.execute("INSERT OR REPLACE INTO people "
+                              "(user_id, username, is_owner, active) VALUES (?,?,0,1)",
+                              (uid, uname))
+                    c.execute("INSERT OR REPLACE INTO allowed (username, ts) "
+                              "VALUES (?,?)", (uname or str(uid), int(time.time())))
+                reply(chat, "Готово! 🎉 Новини приходитимуть сюди самі.\n\n"
+                            "Набридне — напиши /stop, повернутись — /start.")
+                log.info("за перепусткою підключився @%s (%s)", uname, uid)
+                who = ("@" + uname) if uname else str(uid)
+                reply(o["user_id"], "✅ <b>%s</b> підключився за посиланням. "
+                                    "Нічого робити не треба."
+                      % html_mod.escape(who))
+                return
+            log.warning("перепустку вичерпано, стукав @%s (%s)", uname, uid)
+
         if not is_allowed(uid, uname):
             reply(chat, "Цей бот приватний. Якщо це помилка — напишіть власниці.")
             log.warning("чужий стукав: @%s (%s)", uname, uid)
