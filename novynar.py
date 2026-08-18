@@ -199,10 +199,15 @@ def anchors(text):
     «Самара». Схожі за словником, але різні новини цих опор не поділяють."""
     raw = re.sub(r"<[^>]+>", " ", text or "")
     out = set()
-    for w in re.findall(r"[А-ЯІЇЄҐA-Z][\w'’-]{3,}", raw):
+    for w in re.findall(r"[А-ЯІЇЄҐA-Z][\w'’-]{3,}", raw):      # Нікополь, Трамп
         out.add(w.lower()[:6])
-    for num in re.findall(r"\b\d{3,}\b", raw):
+    for abbr in re.findall(r"\b[А-ЯІЇЄҐA-Z]{2,6}\b", raw):    # ВПК, СОУ, ОВА, НАТО
+        out.add(abbr.lower())
+    for num in re.findall(r"\b\d{3,}\b", raw):                # 265, 2026
         out.add("#" + num)
+    for d, m in re.findall(r"\b(\d{1,2})\s+(січня|лютого|березня|квітня|травня|"
+                           r"червня|липня|серпня|вересня|жовтня|листопада|грудня)", raw.lower()):
+        out.add("@%s.%s" % (d, m[:4]))                        # 16 серпня
     return out
 
 
@@ -226,10 +231,14 @@ def is_same_story(tok_a, anc_a, tok_b, anc_b):
     score = looks_similar(tok_a, tok_b)
     if score >= config.SIMILARITY:
         return True, score
-    # слабший словниковий збіг рятують спільні власні назви й числа
-    weak = getattr(config, "SIMILARITY_WEAK", 0.48)
-    need = getattr(config, "ANCHORS_NEEDED", 3)
-    if score >= weak and len(anc_a & anc_b) >= need:
+    # Слабший збіг словами рятують спільні власні назви, абревіатури й дати.
+    common = len(anc_a & anc_b)
+    if score >= getattr(config, "SIMILARITY_WEAK", 0.50) and \
+            common >= getattr(config, "ANCHORS_NEEDED", 3):
+        return True, score
+    # Коли збігається багато назв і дат — сумнівів немає навіть при різних словах.
+    if score >= getattr(config, "SIMILARITY_ANCHORED", 0.35) and \
+            common >= getattr(config, "ANCHORS_STRONG", 5):
         return True, score
     return False, score
 
