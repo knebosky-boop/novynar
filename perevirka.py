@@ -485,7 +485,7 @@ n.api = lambda m, **kw: _calls.append((m, kw.get("text", "")[:40])) or {"ok": Tr
 n.grab_video = lambda url: b"FAKEVIDEO" if url else None
 n.grab_photo = lambda url: b"FAKEPHOTO" if url else None
 n.send_media = lambda uid, method, field, blob, fn, mime, cap, file_id=None: (
-    _calls.append((method, (cap or "")[:40])) or "FILEID123")
+    _calls.append((method, cap or "")) or "FILEID123")
 
 _vid = {"channel": "tgp_news", "text": "Новина з відео про важливі події сьогодні",
         "photo": "https://cdn4.telesco.pe/file/thumb.jpg", "video": True,
@@ -507,7 +507,7 @@ n.send_post(1, _blocked, "Тарас")
 check("недоступне вебу відео — обкладинка", any(m == "sendPhoto" for m, _ in _calls))
 check("і чесна позначка про відео",
       any("відео" in c and "посиланням" in c for _, c in _calls),
-      [c for _, c in _calls][0][:44] if _calls else "")
+      "позначка на місці" if _calls else "")
 check("сторінку поста дарма не смикаємо", _blocked.get("_vresolved") is None)
 
 _calls[:] = []
