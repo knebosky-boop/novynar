@@ -763,6 +763,7 @@ def broadcast(post, title):
     for p in people:
         send_post(p["user_id"], post, title)
         time.sleep(config.SEND_DELAY)
+    bump_unread()
     return True
 
 
@@ -869,6 +870,56 @@ def round_trip():
                       (max(p["id"] for p in fresh), ch))
 
 
+def bump_unread():
+    """Рахуємо, скільки новин пішло від останнього нагадування."""
+    try:
+        set_state("unread", int(get_state("unread", 0) or 0) + 1)
+    except ValueError:
+        set_state("unread", 1)
+
+
+def maybe_remind():
+    """Пару разів на день — дзенькнути читачам, що є що почитати."""
+    times = getattr(config, "REMINDER_TIMES", [])
+    if not times or in_quiet_hours():
+        return
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    for t in times:
+        try:
+            hh, mm = [int(x) for x in t.split(":")]
+        except ValueError:
+            continue
+        target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        waited = (now - target).total_seconds()
+        if not (0 <= waited <= 1200):          # у межах 20 хвилин після часу
+            continue
+        key = "remind:%s:%s" % (today, t)
+        if get_state(key):
+            continue
+
+        unread = int(get_state("unread", 0) or 0)
+        if unread < getattr(config, "REMINDER_MIN_NEWS", 1):
+            # Позначку не ставимо: новини можуть з'явитись за кілька хвилин,
+            # і тоді нагадування ще встигне спрацювати у своєму вікні.
+            return
+        set_state(key, "1")
+        set_state("unread", 0)
+
+        o = owner()
+        word = "новина" if unread == 1 else ("новини" if 2 <= unread <= 4 else "новин")
+        text = ("📬 <b>Є що почитати</b>\n\nВід минулого разу надійшло "
+                "<b>%s %s</b>. Загляньте, коли буде час." % (unread, word))
+        for p in readers():
+            if p["is_owner"] and not getattr(config, "REMINDER_OWNER", False):
+                continue
+            api("sendMessage", chat_id=p["user_id"], text=text,
+                parse_mode="HTML", disable_notification=False)
+            time.sleep(config.SEND_DELAY)
+        log.info("нагадування розіслано (%s новин)", unread)
+        return
+
+
 def watcher():
     was_quiet = in_quiet_hours()
     last_digest = None
@@ -878,6 +929,7 @@ def watcher():
                 round_trip()
                 if config.HOLD_MINUTES:
                     release_ready()
+                maybe_remind()
 
             quiet = in_quiet_hours()
             if was_quiet and not quiet:
@@ -1131,6 +1183,7 @@ def once():
         release_ready()
     if not in_quiet_hours():
         flush_queue("(за минулий час)")
+    maybe_remind()
 
 
 def bootstrap_sources():

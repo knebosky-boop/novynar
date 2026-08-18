@@ -292,6 +292,52 @@ n.datetime = real_dt
 config.QUIET_HOURS = (23, 8)
 
 # ─────────────────────────  доступ  ─────────────────────────
+block("Нагадування «є що почитати»")
+fresh_db()
+with n.db() as c:
+    c.execute("INSERT INTO people VALUES (111,'kate',1,1)")
+    c.execute("INSERT INTO people VALUES (222,'druh',0,1)")
+_sent = []
+_real_api = n.api
+n.api = lambda m, **kw: _sent.append((kw.get("chat_id"), kw.get("text", ""),
+                                      kw.get("disable_notification"))) or {"ok": True}
+_real_dt = dt.datetime
+class _T(_real_dt):
+    H, M = 9, 30
+    @classmethod
+    def now(cls, tz=None): return _real_dt(2026, 8, 18, cls.H, cls.M)
+n.datetime = _T
+config.QUIET_HOURS = (23, 8)
+config.REMINDER_TIMES = ["10:00", "19:00"]
+
+_T.H, _T.M = 9, 30; n.maybe_remind()
+check("до часу мовчить", not _sent)
+_T.H, _T.M = 10, 2; n.maybe_remind()
+check("час настав, новин нема — не турбує", not _sent)
+for _ in range(7):
+    n.bump_unread()
+_T.H, _T.M = 10, 8; _sent[:] = []; n.maybe_remind()
+check("новини зʼявились — нагадало", len(_sent) == 1)
+check("нагадування лише читачам, не власниці", _sent and _sent[0][0] == 222)
+check("нагадування зі звуком", _sent and _sent[0][2] is False)
+check("названо кількість новин", _sent and "7 новин" in _sent[0][1])
+_sent[:] = []; n.maybe_remind()
+check("двічі не нагадує", not _sent)
+n.bump_unread(); n.bump_unread()
+_T.H, _T.M = 19, 4; _sent[:] = []; n.maybe_remind()
+check("ввечері нагадує знову", len(_sent) == 1)
+check("лічильник почався заново", _sent and "2 новини" in _sent[0][1])
+config.REMINDER_TIMES = ["02:00"]; _T.H, _T.M = 2, 1; _sent[:] = []
+for _ in range(5):
+    n.bump_unread()
+n.maybe_remind()
+check("вночі не турбує", not _sent)
+config.REMINDER_TIMES = []; _T.H, _T.M = 12, 0; _sent[:] = []; n.maybe_remind()
+check("порожній список — нагадувань немає", not _sent)
+n.datetime = _real_dt
+n.api = _real_api
+config.REMINDER_TIMES = ["10:00", "19:00"]
+
 block("Хто пройде в бота")
 fresh_db()
 _saved_code = config.INVITE_CODE
@@ -372,9 +418,9 @@ def cmd(text, uid=1, uname="kate"):
 check("/status відповідає", "Новинар" in cmd("/status"))
 check("/help показує команди", "/add" in cmd("/help"))
 before = len(n.sources())
-check("/add додає канал", "Додав" in cmd("/add @suspilne_news") and len(n.sources()) == before + 1)
+check("/add додає канал", "Додав" in cmd("/add @tsn_ua") and len(n.sources()) == before + 1)
 check("/add помічає дурницю", "не" in cmd("/add @qwerty_nemaye_takogo_2026").lower())
-check("/del прибирає", "Прибрав" in cmd("/del @suspilne_news") and len(n.sources()) == before)
+check("/del прибирає", "Прибрав" in cmd("/del @tsn_ua") and len(n.sources()) == before)
 check("/allow впускає", "Впустив" in cmd("/allow @petro") and n.is_allowed(9, "petro"))
 check("/deny відрізає", "Відрізав" in cmd("/deny @petro") and not n.is_allowed(9, "petro"))
 check("чужому команди не даються", cmd("/add @x", uid=99, uname="hacker") == "" or
