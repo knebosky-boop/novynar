@@ -2,8 +2,8 @@ name: Новинар
 
 on:
   schedule:
-    - cron: "*/15 * * * *"      # кожні 15 хвилин (GitHub часто зволікає)
-  workflow_dispatch:             # і кнопка «запустити зараз»
+    - cron: "0 */3 * * *"        # рятівний будильник раз на 3 години
+  workflow_dispatch:
 
 concurrency:
   group: novynar
@@ -13,40 +13,64 @@ jobs:
   obhid:
     name: Обхід каналів
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
+      - name: Чи не працює вже інша зміна
+        id: guard
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          n=$(gh api "repos/${{ github.repository }}/actions/workflows/novynar.yml/runs?status=in_progress" -q '.workflow_runs | length')
+          if [ "$n" -gt 1 ]; then
+            echo "вже працює інша зміна ($n) — лягаю спати"
+            echo "go=no" >> $GITHUB_OUTPUT
+          else
+            echo "go=yes" >> $GITHUB_OUTPUT
+          fi
+
       - uses: actions/checkout@v4
+        if: steps.guard.outputs.go == 'yes'
 
       - uses: actions/setup-python@v5
+        if: steps.guard.outputs.go == 'yes'
         with:
           python-version: "3.11"
           cache: pip
 
       - name: Залежності
+        if: steps.guard.outputs.go == 'yes'
         run: pip install -q -r requirements.txt
 
       - name: Згадати, на чому спинились
+        if: steps.guard.outputs.go == 'yes'
         uses: actions/cache/restore@v4
         with:
           path: novynar.db
           key: novynar-db-${{ github.run_id }}
           restore-keys: novynar-db-
 
-      - name: Зміна на 13 хвилин — обхід кожні 2 хвилини
+      - name: Зміна на 18 хвилин — обхід кожні 2 хвилини
+        if: steps.guard.outputs.go == 'yes'
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           NOVYNAR_OWNER: ${{ secrets.NOVYNAR_OWNER }}
           NOVYNAR_READERS: ${{ secrets.NOVYNAR_READERS }}
           TZ: Europe/Kyiv
-        run: python novynar.py --loop-minutes 13
+        run: python novynar.py --loop-minutes 18
 
       - name: Запам'ятати
-        if: always()
+        if: always() && steps.guard.outputs.go == 'yes'
         uses: actions/cache/save@v4
         with:
           path: novynar.db
           key: novynar-db-${{ github.run_id }}
 
+      - name: Розбудити наступну зміну
+        if: always() && steps.guard.outputs.go == 'yes'
+        env:
+          GH_TOKEN: ${{ secrets.WORKFLOW_PAT }}
+        run: gh workflow run novynar.yml -R ${{ github.repository }}
+
       - name: Журнал
-        if: always()
+        if: always() && steps.guard.outputs.go == 'yes'
         run: tail -40 novynar.log || true
