@@ -476,6 +476,56 @@ n.api = _real_api2
 n.reply = _real_reply
 
 # ─────────────────────────  стійкість  ─────────────────────────
+block("Відео замість картинки")
+fresh_db()
+_calls = []
+_api_real = n.api
+_grabv_real, _grabp_real, _media_real = n.grab_video, n.grab_photo, n.send_media
+n.api = lambda m, **kw: _calls.append((m, kw.get("text", "")[:40])) or {"ok": True}
+n.grab_video = lambda url: b"FAKEVIDEO" if url else None
+n.grab_photo = lambda url: b"FAKEPHOTO" if url else None
+n.send_media = lambda uid, method, field, blob, fn, mime, cap, file_id=None: (
+    _calls.append((method, (cap or "")[:40])) or "FILEID123")
+
+_vid = {"channel": "tgp_news", "text": "Новина з відео про важливі події сьогодні",
+        "photo": "https://cdn4.telesco.pe/file/thumb.jpg", "video": True,
+        "video_url": "https://cdn4.telesco.pe/file/x.mp4", "gif": False,
+        "round": False, "duration": "0:13", "link": "https://t.me/tgp_news/1", "id": 1}
+n.send_post(1, dict(_vid), "Тарас")
+check("відео йде як відео", any(m == "sendVideo" for m, _ in _calls),
+      ", ".join(m for m, _ in _calls))
+check("картинку замість відео не шле", not any(m == "sendPhoto" for m, _ in _calls))
+
+_calls[:] = []
+_gif = dict(_vid); _gif["gif"] = True
+n.send_post(1, _gif, "Тарас")
+check("гіфка йде гіфкою", any(m == "sendAnimation" for m, _ in _calls))
+
+_calls[:] = []
+n.grab_video = lambda url: None          # відео завелике або недоступне
+_big = dict(_vid)
+n.send_post(1, _big, "Тарас")
+check("завелике відео — обкладинка і позначка", any(m == "sendPhoto" for m, _ in _calls))
+check("у тексті сказано про відео",
+      any("🎬" in c or "відео" in c for _, c in _calls))
+
+_calls[:] = []
+n.grab_video = lambda url: b"FAKEVIDEO"
+_shared = dict(_vid)
+n.send_post(1, _shared, "Тарас")
+n.send_post(2, _shared, "Тарас")
+check("другому читачеві відео не качається вдруге", _shared.get("_vid_id") == "FILEID123")
+
+_calls[:] = []
+_photo_only = {"channel": "babel", "text": "Новина з картинкою про важливі події",
+               "photo": "https://cdn4.telesco.pe/file/p.jpg", "video": False,
+               "video_url": None, "gif": False, "round": False, "duration": "",
+               "link": "https://t.me/babel/2", "id": 2}
+n.send_post(1, _photo_only, "Бабель")
+check("звичайне фото працює як раніше", any(m == "sendPhoto" for m, _ in _calls))
+
+n.api, n.grab_video, n.grab_photo, n.send_media = _api_real, _grabv_real, _grabp_real, _media_real
+
 block("Стійкість до збоїв")
 check("порожній текст не шлемо", not n.passes_filters("", False, "babel")[0])
 check("медіа без тексту проходить", n.passes_filters(None, True, "babel")[0])

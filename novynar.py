@@ -484,14 +484,23 @@ def fetch_channel(channel):
                 if mm:
                     photo = mm.group(1)
 
-        has_video = bool(box.select_one(".tgme_widget_message_video"))
+        vid = box.select_one("video.tgme_widget_message_video")
+        video_url = vid.get("src") if vid else None
+        is_gif = bool(box.select_one(".tgme_widget_message_gif"))
+        is_round = bool(box.select_one(".tgme_widget_message_roundvideo"))
+        dur = box.select_one(".message_video_duration")
+
         when = box.select_one("time")
         posts.append({
             "id": pid,
             "channel": channel,
             "text": text,
             "photo": photo,
-            "video": has_video,
+            "video": bool(vid),
+            "video_url": video_url,
+            "gif": is_gif,
+            "round": is_round,
+            "duration": dur.get_text(strip=True) if dur else "",
             "link": "https://t.me/%s/%s" % (channel, pid),
             "when": when.get("datetime") if when else "",
         })
@@ -594,6 +603,62 @@ def grab_photo(url):
     except Exception as e:
         log.info("картинка не завантажилась: %s", e)
         return None
+
+
+def grab_video(url):
+    """Тягнемо саме відео. Завелике — відмовляємось, піде обкладинка."""
+    if not url:
+        return None
+    limit = getattr(config, "VIDEO_MAX_MB", 45)
+    try:
+        head = requests.head(url, headers={"User-Agent": UA, "Referer": "https://t.me/"},
+                             timeout=25, allow_redirects=True)
+        size = int(head.headers.get("content-length") or 0)
+        if size and size > limit * 1048576:
+            log.info("відео завелике (%.1f МБ) — шлю обкладинку", size / 1048576.0)
+            return None
+        r = requests.get(url, headers={"User-Agent": UA, "Referer": "https://t.me/"},
+                         timeout=180)
+        r.raise_for_status()
+        if len(r.content) > limit * 1048576:
+            return None
+        return r.content
+    except Exception as e:
+        log.info("відео не завантажилось: %s", e)
+        return None
+
+
+def send_media(uid, method, field, blob, filename, mime, caption, file_id=None):
+    """Надсилаємо файл. Повертає file_id — щоб решті читачів не качати знову."""
+    for attempt in range(2):
+        try:
+            if file_id:
+                r = requests.post(API + method, timeout=120, data={
+                    "chat_id": uid, field: file_id, "caption": caption,
+                    "parse_mode": "HTML",
+                    "disable_notification": wants_silence(uid)})
+            else:
+                r = requests.post(API + method, timeout=300,
+                                  data={"chat_id": uid, "caption": caption,
+                                        "parse_mode": "HTML",
+                                        "disable_notification": wants_silence(uid)},
+                                  files={field: (filename, blob, mime)})
+            j = r.json()
+            if j.get("ok"):
+                res = j["result"]
+                got = res.get(field) or res.get("document")
+                if isinstance(got, list):
+                    got = got[-1]
+                return (got or {}).get("file_id", "") if isinstance(got, dict) else ""
+            if j.get("error_code") == 429:
+                time.sleep(j.get("parameters", {}).get("retry_after", 5) + 1)
+                continue
+            log.warning("%s не вдався: %s", method, j.get("description"))
+            return None
+        except Exception as e:
+            log.warning("%s зірвався: %s", method, e)
+            time.sleep(3)
+    return None
 
 
 def send_photo(uid, blob, caption):
@@ -741,25 +806,62 @@ def close_tags(s):
 
 def send_post(uid, post, title):
     body = post["text"] or ""
-    if post["video"] and "відео" not in body.lower():
-        body = (body + "\n\n🎬 у пості є відео").strip()
+
+    # 1) справжнє відео, якщо дістали
+    if post.get("video_url") and "_novideo" not in post:
+        blob = post.get("_vblob")
+        if blob is None and not post.get("_vid_id"):
+            blob = grab_video(post["video_url"])
+            if blob is None:
+                post["_novideo"] = True
+            else:
+                post["_vblob"] = blob
+        if post.get("_vid_id") or post.get("_vblob"):
+            method, field = ("sendAnimation", "animation") if post.get("gif") \
+                else ("sendVideo", "video")
+            parts = split_messages(title, body, post["link"], first_limit=1024)
+            fid = send_media(uid, method, field, post.get("_vblob"),
+                             "news.mp4", "video/mp4", parts[0],
+                             file_id=post.get("_vid_id"))
+            if fid is not None:
+                if fid:
+                    post["_vid_id"] = fid
+                    post["_vblob"] = None      # далі шлемо за посиланням Telegram
+                for i, chunk in enumerate(parts[1:]):
+                    if not api("sendMessage", chat_id=uid, text=chunk, parse_mode="HTML",
+                               disable_web_page_preview=True):
+                        return False
+                    time.sleep(0.4)
+                return True
+            log.info("відео не пішло — пробую обкладинку")
+            post["_novideo"] = True
+
+    # 2) не вийшло — обкладинка чи просто текст
+    if post.get("video") and "відео" not in body.lower():
+        mark = "🎬 у пості є відео"
+        if post.get("duration"):
+            mark += " (%s)" % post["duration"]
+        body = (body + "\n\n" + mark).strip()
 
     blob = None
-    if post["photo"]:
+    if post["photo"] and not post.get("_ph_id"):
         blob = post.get("_blob") or grab_photo(post["photo"])
         if blob:
-            post["_blob"] = blob        # решті читачів качати вдруге не треба
+            post["_blob"] = blob
 
-    # Підпис до фото Telegram обмежує 1024 знаками, звичайний текст — 4096.
     parts = split_messages(title, body, post["link"],
-                           first_limit=1024 if blob else 4096)
+                           first_limit=1024 if (blob or post.get("_ph_id")) else 4096)
 
-    if blob:
-        if not send_photo(uid, blob, parts[0]):
+    if blob or post.get("_ph_id"):
+        fid = send_media(uid, "sendPhoto", "photo", blob, "news.jpg", "image/jpeg",
+                         parts[0], file_id=post.get("_ph_id"))
+        if fid is None:
             log.info("фото не пішло — шлю самим текстом")
             parts = split_messages(title, body, post["link"], first_limit=4096)
-            blob = None
         else:
+            if fid:
+                post["_ph_id"] = fid
+                post["_blob"] = None
             parts = parts[1:]
 
     for i, chunk in enumerate(parts):
