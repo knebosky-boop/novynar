@@ -649,7 +649,7 @@ def split_messages(title, body, link, first_limit, rest_limit=4096, max_parts=8)
 
     Розрив може випасти всередину <b> чи <a> — тому на місці розрізу теги
     закриваємо, а на початку наступної частини відкриваємо знову."""
-    head = "📡 <b>%s</b>\n\n" % html_mod.escape(title)
+    head = "📡 <b>%s</b>\n\n" % html_mod.escape(short_title(title))
     tail = '\n\n<a href="%s">↗ оригінал</a>' % link
     body = (body or "").strip()
     parts, rest, carry = [], body, ""
@@ -679,8 +679,25 @@ def split_messages(title, body, link, first_limit, rest_limit=4096, max_parts=8)
     return parts
 
 
+def short_title(title):
+    """Коротке ім'я каналу для заголовка.
+
+    Канали люблять писати в назві перелік міст чи гасло — у заголовку новини
+    це зайве. Беремо частину до роздільника й обрізаємо."""
+    t = (title or "").strip()
+    for sep in (":", "|", "—", "–", "•", " l ", " — "):
+        if sep in t:
+            head = t.split(sep)[0].strip()
+            if len(head) >= 4:
+                t = head
+                break
+    if len(t) > 40:
+        t = t[:40].rsplit(" ", 1)[0] + "…"
+    return t
+
+
 def build_text(title, body, link, limit):
-    head = "📡 <b>%s</b>" % html_mod.escape(title)
+    head = "📡 <b>%s</b>" % html_mod.escape(short_title(title))
     tail = '\n\n<a href="%s">↗ оригінал</a>' % link
     body, was_cut = smart_cut(body, limit - len(head) - len(tail) - 40)
     if was_cut:
@@ -770,7 +787,7 @@ def flush_queue(reason=""):
     chunks, cur = [], "🗞 <b>Зведення новин</b> %s\n" % html_mod.escape(reason)
     for r in rows:
         piece = '\n<b>%s</b>\n%s\n<a href="%s">↗ оригінал</a>\n' % (
-            html_mod.escape(r["title"]),
+            html_mod.escape(short_title(r["title"])),
             close_tags((r["text"] or "")[:400].strip()),
             r["link"])
         if len(cur) + len(piece) > 3800:
