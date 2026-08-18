@@ -501,6 +501,29 @@ def fetch_channel(channel):
 
 # ─────────────────────────────  надсилання  ─────────────────────────────
 
+def drop_reader(chat_id, why=""):
+    """Людина заблокувала бота або видалила себе — знімаємо з потоку,
+    щоб не гримати в зачинені двері. Повернеться командою /start."""
+    o = owner()
+    with db() as c:
+        row = c.execute("SELECT username, is_owner FROM people WHERE user_id = ?",
+                        (chat_id,)).fetchone()
+        if not row:
+            return
+        c.execute("UPDATE people SET active = 0 WHERE user_id = ?", (chat_id,))
+    who = ("@" + row["username"]) if row["username"] else str(chat_id)
+    log.warning("знято з потоку %s: %s", who, why[:60])
+    if o and str(o["user_id"]) != str(chat_id):
+        try:
+            requests.post(API + "sendMessage", timeout=30, data={
+                "chat_id": o["user_id"], "parse_mode": "HTML",
+                "text": "ℹ️ <b>%s</b> більше не отримує новини — заблокував бота "
+                        "або видалив чат. Захоче назад — хай напише боту /start."
+                        % html_mod.escape(who)})
+        except Exception:
+            pass
+
+
 def wants_silence(chat_id):
     """Власниці — зі звуком (щоб бачила, що бот живий), читачам — тихо."""
     o = owner()
@@ -519,6 +542,12 @@ def api(method, **params):
             if j.get("ok"):
                 return j["result"]
             desc = j.get("description", "")
+            if j.get("error_code") in (400, 403) and params.get("chat_id"):
+                low = desc.lower()
+                if ("blocked" in low or "chat not found" in low
+                        or "user is deactivated" in low or "bot was kicked" in low):
+                    drop_reader(params["chat_id"], desc)
+                    return None
             if j.get("error_code") == 429:
                 wait = j.get("parameters", {}).get("retry_after", 5)
                 log.warning("ліміт Telegram, чекаю %s с", wait)

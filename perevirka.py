@@ -307,6 +307,45 @@ check("із закритою перепусткою не пускає ніког
 check("вже підключені лишаються", n.is_allowed(2, "druh"))
 config.INVITE_CODE = _saved_code
 
+block("Якщо друг вийшов і повернувся")
+fresh_db()
+sent = []
+n.reply = lambda chat, text: sent.append(text)
+_saved = config.INVITE_CODE
+config.INVITE_CODE = "test-perepustka"
+start(1, "kate")
+start(2, "druh", "test-perepustka")
+config.INVITE_CODE = ""
+check("друг у потоці", 2 in [p["user_id"] for p in n.readers()])
+n.handle_command({"text": "/stop", "from": {"id": 2, "username": "druh"}, "chat": {"id": 2}})
+check("після /stop новини не йдуть", 2 not in [p["user_id"] for p in n.readers()])
+start(2, "druh")
+check("після /start повертається навіть із закритою перепусткою",
+      2 in [p["user_id"] for p in n.readers()])
+start(777, "chuzhyi")
+check("сторонній так само не пройде", 777 not in [p["user_id"] for p in n.readers()])
+
+# заблокував бота
+_real_post = __import__("requests").post
+class _R:
+    def __init__(s, j): s._j = j
+    def json(s): return s._j
+_notes = []
+def _fake(url, **kw):
+    d = kw.get("data", {})
+    if str(d.get("chat_id")) == "2":
+        return _R({"ok": False, "error_code": 403,
+                   "description": "Forbidden: bot was blocked by the user"})
+    _notes.append(d.get("text", ""))
+    return _R({"ok": True, "result": {"message_id": 1}})
+__import__("requests").post = _fake
+n.api("sendMessage", chat_id=2, text="новина")
+check("заблокованого знято з потоку", 2 not in [p["user_id"] for p in n.readers()])
+check("власниця лишається", 1 in [p["user_id"] for p in n.readers()])
+check("власницю попереджено", any("більше не отримує" in t for t in _notes))
+__import__("requests").post = _real_post
+config.INVITE_CODE = _saved
+
 block("Команди")
 fresh_db()
 sent = []
