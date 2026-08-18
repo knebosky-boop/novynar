@@ -297,7 +297,18 @@ def is_alert(text):
     return False
 
 
+def is_service(text):
+    """«Шрайк pinned «…»» — це позначка телеграму, а не новина."""
+    raw = re.sub(r"<[^>]+>", "", text or "").strip()
+    for pat in getattr(config, "SERVICE_PATTERNS", []):
+        if re.search(pat, raw, re.I):
+            return True
+    return False
+
+
 def passes_filters(text, has_media, channel=None):
+    if is_service(text):
+        return False, "службова позначка"
     low = (text or "").lower()
     floor = getattr(config, "CHANNEL_MIN_LENGTH", {}).get(channel or "")
     if floor and len(low.strip()) < floor:
@@ -408,9 +419,17 @@ def fetch_channel(channel):
 
 # ─────────────────────────────  надсилання  ─────────────────────────────
 
+def wants_silence(chat_id):
+    """Власниці — зі звуком (щоб бачила, що бот живий), читачам — тихо."""
+    o = owner()
+    if o and str(chat_id) == str(o["user_id"]):
+        return bool(getattr(config, "SILENT_OWNER", False))
+    return bool(getattr(config, "SILENT_READERS", True))
+
+
 def api(method, **params):
-    if method in ("sendMessage", "sendPhoto") and getattr(config, "SILENT", False):
-        params.setdefault("disable_notification", True)
+    if method in ("sendMessage", "sendPhoto") and "disable_notification" not in params:
+        params["disable_notification"] = wants_silence(params.get("chat_id"))
     for attempt in range(3):
         try:
             r = requests.post(API + method, data=params, timeout=60)
@@ -456,8 +475,7 @@ def send_photo(uid, blob, caption):
             r = requests.post(API + "sendPhoto",
                               data={"chat_id": uid, "caption": caption,
                                     "parse_mode": "HTML",
-                                    "disable_notification":
-                                        bool(getattr(config, "SILENT", False))},
+                                    "disable_notification": wants_silence(uid)},
                               files={"photo": ("news.jpg", blob, "image/jpeg")},
                               timeout=120)
             j = r.json()
