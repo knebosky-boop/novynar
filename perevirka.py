@@ -122,6 +122,59 @@ check("після надсилання сюжет запам'ятано", n.alre
 check("чужий сюжет не плутається", n.already_told(c) is None)
 
 # ─────────────────────────  довгі пости  ─────────────────────────
+block("Дублі: опора на власні назви")
+for a, b, want, why in [
+    ("Трамп максимально скоротив масштаби спільних військових навчань з Південною Кореєю через КНДР",
+     "Дональд Трамп заявив, що США скоротять спільні навчання з Південною Кореєю через переговори з КНДР",
+     True, "Трамп і Корея"),
+    ("У ніч на 16 серпня підрозділи Сил оборони завдали ураження підприємству ВПК у Самарській області",
+     "Генштаб: у ніч на 16 серпня підрозділи СОУ завдали ураження важливому підприємству ВПК",
+     True, "удар по ВПК"),
+    ("Вночі росіяни атакували портову інфраструктуру Одещини, є постраждалі, пошкоджено судно",
+     "Вночі ворог атакував портову інфраструктуру Одещини, — ОВА. Пошкоджено цивільне судно",
+     True, "атака на Одещину"),
+    ("Пишуть, що голосування за посаду міністра оборони та закордонних справ буде завтра",
+     "РБК зробили матеріал про групи впливу в оточенні Зеленського та звільнення голови Офісу",
+     False, "різні: голосування і матеріал"),
+    ("Макет української балістичної ракети FP-9 від Fire Point на виставці у Данії",
+     "Перша українська балістика може зʼявитися восени, компанія Fire Point розробляє ракету",
+     False, "різні: макет і плани"),
+    ("У Дніпрі відкрили новий міст через Самару після ремонту",
+     "У Дніпрі закрили міст через Самару на ремонт до кінця року",
+     False, "різні: відкрили і закрили"),
+]:
+    same, sc = n.is_same_story(n.tokens(a), n.anchors(a), n.tokens(b), n.anchors(b))
+    check(why, same == want, "збіг %.0f%%, спільних назв %s"
+          % (sc * 100, len(n.anchors(a) & n.anchors(b))))
+
+block("Оновлення старої бази")
+import sqlite3 as _sq
+_old_path = n.DB_PATH
+n.DB_PATH = "/tmp/nv_migr_check.db"
+if os.path.exists(n.DB_PATH):
+    os.remove(n.DB_PATH)
+_c = _sq.connect(n.DB_PATH)
+_c.executescript("""
+CREATE TABLE recent (id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT, words TEXT, ts INTEGER);
+CREATE TABLE sources (channel TEXT PRIMARY KEY, title TEXT, last_id INTEGER DEFAULT 0, active INTEGER DEFAULT 1);
+CREATE TABLE people (user_id INTEGER PRIMARY KEY, username TEXT, is_owner INTEGER DEFAULT 0, active INTEGER DEFAULT 1);
+INSERT INTO recent (channel, words, ts) VALUES ('babel','стара памʼять',1700000000);
+INSERT INTO sources VALUES ('babel','Бабель',88000,1);
+""")
+_c.commit(); _c.close()
+n.init_db(); n.migrate()
+with n.db() as c:
+    _cols = [r[1] for r in c.execute("PRAGMA table_info(recent)")]
+    _kept = c.execute("SELECT COUNT(*) n FROM recent").fetchone()["n"]
+    _pos = c.execute("SELECT last_id FROM sources WHERE channel='babel'").fetchone()["last_id"]
+check("стовпець anchors додається", "anchors" in _cols)
+check("стара памʼять не гине", _kept == 1)
+check("позиції каналів не гинуть", _pos == 88000)
+n.remember("babel", "Новина про важливі події у Дніпрі та області сьогодні вранці")
+check("запис у оновлену схему працює",
+      n.already_told("Новина про важливі події у Дніпрі та області сьогодні вранці") is not None)
+n.DB_PATH = _old_path
+
 block("Довгі пости: повний текст без втрат")
 plain = lambda s: re.sub(r"\s+", "", re.sub(r"<[^>]+>", "", s))
 body = ("<b>Заголовок новини</b>\n\n" +

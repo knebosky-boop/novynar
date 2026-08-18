@@ -71,7 +71,7 @@ def init_db():
         );
         CREATE TABLE IF NOT EXISTS recent (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            channel TEXT, words TEXT, ts INTEGER
+            channel TEXT, words TEXT, anchors TEXT, ts INTEGER
         );
         CREATE TABLE IF NOT EXISTS queue (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -90,6 +90,28 @@ def init_db():
             k TEXT PRIMARY KEY, v TEXT
         );
         """)
+
+
+def migrate():
+    """Доводимо стару базу до нового вигляду — вона живе в сховищі GitHub
+    і не перестворюється при оновленні програми."""
+    wanted = {
+        "recent": [("anchors", "TEXT")],
+        "sources": [("title", "TEXT"), ("last_id", "INTEGER DEFAULT 0")],
+        "people": [("username", "TEXT"), ("is_owner", "INTEGER DEFAULT 0")],
+    }
+    with db() as c:
+        for table, cols in wanted.items():
+            try:
+                have = {r[1] for r in c.execute("PRAGMA table_info(%s)" % table)}
+            except sqlite3.Error:
+                continue
+            if not have:
+                continue
+            for name, decl in cols:
+                if name not in have:
+                    c.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, name, decl))
+                    log.info("базу оновлено: %s.%s", table, name)
 
 
 def get_state(k, default=None):
@@ -170,6 +192,20 @@ def tokens(text):
     return out
 
 
+def anchors(text):
+    """Власні назви й числа — те, про що новина насправді.
+
+    Дві розповіді про одну подію збігаються саме тут: «Фламінго», «Прогрес»,
+    «Самара». Схожі за словником, але різні новини цих опор не поділяють."""
+    raw = re.sub(r"<[^>]+>", " ", text or "")
+    out = set()
+    for w in re.findall(r"[А-ЯІЇЄҐA-Z][\w'’-]{3,}", raw):
+        out.add(w.lower()[:6])
+    for num in re.findall(r"\b\d{3,}\b", raw):
+        out.add("#" + num)
+    return out
+
+
 def looks_similar(a, b):
     """Скільки спільного у двох новин: 1.0 — одне й те саме, 0 — нічого."""
     if not a or not b:
@@ -185,19 +221,33 @@ def looks_similar(a, b):
     return jaccard
 
 
+def is_same_story(tok_a, anc_a, tok_b, anc_b):
+    """Чи це та сама подія. Повертає (так/ні, збіг)."""
+    score = looks_similar(tok_a, tok_b)
+    if score >= config.SIMILARITY:
+        return True, score
+    # слабший словниковий збіг рятують спільні власні назви й числа
+    weak = getattr(config, "SIMILARITY_WEAK", 0.48)
+    need = getattr(config, "ANCHORS_NEEDED", 3)
+    if score >= weak and len(anc_a & anc_b) >= need:
+        return True, score
+    return False, score
+
+
 def already_told(text):
     """Чи розповідали ми це вже — хай навіть іншими словами."""
     if not config.SIMILARITY:
         return None
-    tok = tokens(text)
+    tok, anc = tokens(text), anchors(text)
     if len(tok) < 5:
         return None
     now = int(time.time())
     with db() as c:
         c.execute("DELETE FROM recent WHERE ts < ?", (now - config.DEDUP_HOURS * 3600,))
-        for r in c.execute("SELECT channel, words FROM recent").fetchall():
-            score = looks_similar(tok, set((r["words"] or "").split()))
-            if score >= config.SIMILARITY:
+        for r in c.execute("SELECT channel, words, anchors FROM recent").fetchall():
+            same, score = is_same_story(tok, anc, set((r["words"] or "").split()),
+                                        set((r["anchors"] or "").split()))
+            if same:
                 return (r["channel"], score)
     return None
 
@@ -208,8 +258,9 @@ def remember(channel, text):
     if len(tok) < 5:
         return
     with db() as c:
-        c.execute("INSERT INTO recent (channel, words, ts) VALUES (?,?,?)",
-                  (channel, " ".join(sorted(tok)), int(time.time())))
+        c.execute("INSERT INTO recent (channel, words, anchors, ts) VALUES (?,?,?,?)",
+                  (channel, " ".join(sorted(tok)), " ".join(sorted(anchors(text))),
+                   int(time.time())))
 
 
 def weigh(post):
@@ -1019,6 +1070,7 @@ def main():
     if not config.BOT_TOKEN:
         sys.exit("❌ У config.py не заповнений BOT_TOKEN")
     init_db()
+    migrate()
     bootstrap_sources()
     bootstrap_people()
 
