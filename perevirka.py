@@ -750,6 +750,59 @@ check("інші теги при тих самих словах — не прав
 
 n.api, n.send_media, n.time.sleep = _e_api, _e_media, _e_sleep
 
+block("Пост-відповідь: беремо власний текст, а не цитату")
+from bs4 import BeautifulSoup as _BS
+
+_reply_html = """
+<div class="tgme_widget_message" data-post="frontline_analytics/393">
+  <div class="tgme_widget_message_text js-message_reply_text" dir="auto">На рф створено ВБС - війська безпілотних систем. По суті це наші СБС але з запізненням. Про…</div>
+  <div class="tgme_widget_message_text js-message_text" dir="auto"><b>Провал набору в ВБС рф.</b><br/><br/>Розвиток безпілотних сил став одним із найбільш пріоритетних напрямків у сучасній війні.</div>
+</div>"""
+_box = _BS(_reply_html, "lxml").select_one(".tgme_widget_message")
+_got = n.clean_html(n.message_text_node(_box))
+check("цитату чужого поста не беремо", "Провал набору" in _got, _got[:40])
+check("урізаний текст цитати не пролізає", "По суті це наші СБС" not in _got)
+
+_plain_html = """
+<div class="tgme_widget_message" data-post="babel/1">
+  <div class="tgme_widget_message_text js-message_text" dir="auto">Звичайний пост без відповіді на когось.</div>
+</div>"""
+_box = _BS(_plain_html, "lxml").select_one(".tgme_widget_message")
+check("звичайний пост читається як раніше",
+      "Звичайний пост" in n.clean_html(n.message_text_node(_box)))
+
+_old_html = """
+<div class="tgme_widget_message" data-post="babel/2">
+  <div class="tgme_widget_message_text" dir="auto">Розмітка без js-класу.</div>
+</div>"""
+_box = _BS(_old_html, "lxml").select_one(".tgme_widget_message")
+check("розмітка без js-класу теж читається",
+      "без js-класу" in n.clean_html(n.message_text_node(_box)))
+
+_none_html = '<div class="tgme_widget_message" data-post="babel/3"></div>'
+_box = _BS(_none_html, "lxml").select_one(".tgme_widget_message")
+check("пост без тексту не роняє", n.clean_html(n.message_text_node(_box)) == "")
+
+# живий канал: там, де пост є відповіддю, текст має бути власний
+import requests as _rq
+try:
+    _raw = _rq.get("https://t.me/s/frontline_analytics",
+                   headers={"User-Agent": n.UA}, timeout=30).text
+    _soup = _BS(_raw, "lxml")
+    _bad = 0
+    _seen = 0
+    for _b in _soup.select(".tgme_widget_message"):
+        _q = _b.select_one(".js-message_reply_text")
+        if not _q:
+            continue
+        _seen += 1
+        if n.clean_html(n.message_text_node(_b)) == n.clean_html(_q):
+            _bad += 1
+    check("у живому каналі цитати не підміняють пост", _bad == 0,
+          "постів-відповідей: %s, підмін: %s" % (_seen, _bad))
+except Exception as _e:
+    print("     ⚠ живу перевірку пропущено: %s" % str(_e)[:50])
+
 block("Живі канали")
 alive = dead = 0
 for ch in config.SOURCES:

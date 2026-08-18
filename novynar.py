@@ -476,6 +476,17 @@ def clean_html(node):
     return raw.strip()
 
 
+def message_text_node(box):
+    """Текст самого поста.
+
+    Коли пост — відповідь на інший, у розмітці ПЕРШОЮ йде урізана цитата
+    того допису (`js-message_reply_text`, обривається на «…»), і лише за
+    нею — власний текст (`js-message_text`). Брати перше-ліпше не можна:
+    саме через це новини з «Аналітики фронту» приходили обрізаними."""
+    return (box.select_one(".tgme_widget_message_text.js-message_text")
+            or box.select_one(".tgme_widget_message_text:not(.js-message_reply_text)"))
+
+
 def fetch_channel(channel):
     """Повертає (назва каналу, список постів). Пости — від старіших до новіших."""
     url = "https://t.me/s/%s" % channel
@@ -495,7 +506,7 @@ def fetch_channel(channel):
             continue
         pid = int(m.group(1))
 
-        text = clean_html(box.select_one(".tgme_widget_message_text"))
+        text = clean_html(message_text_node(box))
 
         photo = None
         ph = box.select_one(".tgme_widget_message_photo_wrap")
