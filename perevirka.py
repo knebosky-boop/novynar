@@ -292,6 +292,24 @@ for limit in (1024, 4096):
         if st: stack_ok = False
     check("ліміт %s: розмітка ціла в кожній частині" % limit, stack_ok)
 
+block("Довгий пост: величезне посилання на початку")
+# Баг 18.08.2026: розріз не можна ставити всередині тега, а якщо href довший
+# за ліміт — розріз упирався в його початок і не зсувався. Цикл нарубав сім
+# порожніх повідомлень і восьме з «…решта за посиланням»: новина гинула.
+for href_len, lim in ((1200, 1024), (4500, 1024), (4500, 4096), (9000, 1024)):
+    huge = '<a href="https://example.com/%s">Огляд дня</a>\n\n' % ("y" * href_len)
+    text = huge + "Новина про напад на дітей у Польщі. " * 40
+    parts = n.split_messages("Тарас Григорович", text, "https://t.me/tgp_news/1", lim)
+    note = "href %s, ліміт %s → %s частин" % (href_len, lim, len(parts))
+    check("порожніх повідомлень немає", 
+          all(len(re.sub(r"<[^>]+>", "", x).strip()) > 30 for x in parts), note)
+    check("новина не загинула в обриві",
+          not any("решта за посиланням" in x for x in parts), note)
+    check("текст новини дійшов цілим",
+          "нападнадітейуПольщі" in re.sub(r"\s+", "", re.sub(r"<[^>]+>", "", "".join(parts))), note)
+    pairs_ok = all(len(re.findall(r"<a[ >]", x)) == len(re.findall(r"</a>", x)) for x in parts)
+    check("жодного осиротілого </a>", pairs_ok, note)
+
 # ─────────────────────────  черга  ─────────────────────────
 block("Нічна черга і зведення")
 fresh_db()

@@ -746,7 +746,19 @@ def cut_pos(body, room):
         i = cut.rfind(sep)
         if i > len(cut) * 0.45:             # не ріжемо надто коротко
             return i + len(sep)
-    return len(cut)
+    if cut:
+        return len(cut)
+    # Сюди потрапляємо, коли сам тег довший за ліміт — приміром величезне
+    # посилання на початку поста. Різати всередині тега не можна, а віддати
+    # нуль означає, що розріз не зсунеться і цикл нарубає порожніх частин.
+    # Тому відступаємо до кінця тега: перевищимо ліміт на довжину href, зате
+    # зрушимо з місця (Telegram href у довжину повідомлення не рахує).
+    end = body.find(">", lt if lt >= 0 else 0)
+    if end == -1:
+        return len(body)
+    # Стати одразу за тегом мало: тоді в частині сам лише тег, і читач
+    # отримає порожнє повідомлення. Перескочивши тег, добираємо ще тексту.
+    return end + 1 + cut_pos(body[end + 1:], room)
 
 
 def smart_cut(body, room):
@@ -804,12 +816,22 @@ def split_messages(title, body, link, first_limit, rest_limit=4096, max_parts=8)
                          + "\n\n<i>…решта за посиланням</i>")
             break
         pos = cut_pos(piece, limit)
+        if pos <= 0:                        # запобіжник: розріз не зсунувся
+            parts.append(prefix + piece)    # краще одне довге, ніж вісім порожніх
+            break
         raw = piece[:pos].rstrip()
         stack = open_stack(raw)
         closed = raw + "".join("</%s>" % t for t, _ in reversed(stack))
         parts.append(prefix + closed)
         carry = "".join(full for _, full in stack)
         rest = piece[pos:].lstrip()
+        if len(carry) > 300:
+            # Величезний href (буває на початку поста) тягнути в кожну частину
+            # немає сенсу. Тег не переносимо — тоді й його закривач у залишку
+            # стає сиротою, а на сиротах Telegram відбиває все повідомлення.
+            for tag, _ in stack:
+                rest = rest.replace("</%s>" % tag, "", 1)
+            carry = ""
         if not rest:
             break
 
