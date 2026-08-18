@@ -464,15 +464,88 @@ def send_photo(uid, blob, caption):
     return False
 
 
+def cut_pos(body, room):
+    """Де саме різати: межа абзацу чи речення, ніколи не всередині тега."""
+    if len(body) <= room:
+        return len(body)
+    cut = body[:room]
+    lt, gt = cut.rfind("<"), cut.rfind(">")
+    if lt > gt:                             # ліміт випав усередину тега
+        cut = cut[:lt]
+    for sep in ("\n\n", "\n", ". ", "! ", "? ", "… ", "; ", ", ", " "):
+        i = cut.rfind(sep)
+        if i > len(cut) * 0.45:             # не ріжемо надто коротко
+            return i + len(sep)
+    return len(cut)
+
+
+def smart_cut(body, room):
+    """Обрізаний текст і ознака, чи різали взагалі."""
+    body = (body or "").strip()
+    pos = cut_pos(body, room)
+    if pos >= len(body):
+        return body, False
+    return close_tags(body[:pos].rstrip()), True
+
+
+def open_stack(fragment):
+    """Які теги лишились відкритими на місці розрізу (з їхніми атрибутами)."""
+    stack = []
+    for m in re.finditer(r"<(/?)(\w[\w-]*)([^>]*)>", fragment):
+        closing, tag = m.group(1), m.group(2).lower()
+        if tag not in KEEP_TAGS:
+            continue
+        if closing:
+            for i in range(len(stack) - 1, -1, -1):
+                if stack[i][0] == tag:
+                    stack.pop(i)
+                    break
+        else:
+            stack.append((tag, m.group(0)))
+    return stack
+
+
+def split_messages(title, body, link, first_limit, rest_limit=4096, max_parts=8):
+    """Ріжемо довгий пост на кілька повідомлень, не втрачаючи ані слова.
+
+    Розрив може випасти всередину <b> чи <a> — тому на місці розрізу теги
+    закриваємо, а на початку наступної частини відкриваємо знову."""
+    head = "📡 <b>%s</b>\n\n" % html_mod.escape(title)
+    tail = '\n\n<a href="%s">↗ оригінал</a>' % link
+    body = (body or "").strip()
+    parts, rest, carry = [], body, ""
+
+    while True:
+        first = not parts
+        prefix = head if first else ""
+        limit = (first_limit if first else rest_limit) - len(prefix) - len(tail) - 30
+        piece = carry + rest
+        if len(piece) <= limit or len(parts) + 1 >= max_parts:
+            parts.append(prefix + piece)
+            break
+        pos = cut_pos(piece, limit)
+        raw = piece[:pos].rstrip()
+        stack = open_stack(raw)
+        closed = raw + "".join("</%s>" % t for t, _ in reversed(stack))
+        parts.append(prefix + closed)
+        carry = "".join(full for _, full in stack)
+        rest = piece[pos:].lstrip()
+        if not rest:
+            break
+
+    parts[-1] += tail
+    if len(parts) > 1:
+        parts = ["%s\n\n<i>%s з %s</i>" % (p, i + 1, len(parts)) if i < len(parts) - 1
+                 else p for i, p in enumerate(parts)]
+    return parts
+
+
 def build_text(title, body, link, limit):
     head = "📡 <b>%s</b>" % html_mod.escape(title)
     tail = '\n\n<a href="%s">↗ оригінал</a>' % link
-    room = limit - len(head) - len(tail) - 10
-    body = (body or "").strip()
-    if len(body) > room:
-        cut = body[:room]
-        cut = cut.rsplit(" ", 1)[0] if " " in cut else cut
-        body = close_tags(cut) + " …"
+    body, was_cut = smart_cut(body, limit - len(head) - len(tail) - 40)
+    if was_cut:
+        body += "\n\n<i>…далі за посиланням</i>"
     return head + ("\n\n" + body if body else "") + tail
 
 
@@ -495,20 +568,35 @@ def close_tags(s):
 
 
 def send_post(uid, post, title):
-    body = post["text"]
-    if post["video"] and "відео" not in (body or "").lower():
+    body = post["text"] or ""
+    if post["video"] and "відео" not in body.lower():
         body = (body + "\n\n🎬 у пості є відео").strip()
+
+    blob = None
     if post["photo"]:
         blob = post.get("_blob") or grab_photo(post["photo"])
         if blob:
-            post["_blob"] = blob          # для решти читачів качати вдруге не треба
-            text = build_text(title, body, post["link"], 1024)
-            if send_photo(uid, blob, text):
-                return True
-            log.info("фото не пішло — шлю текстом")
-    text = build_text(title, body, post["link"], 4096)
-    return bool(api("sendMessage", chat_id=uid, text=text,
-                    parse_mode="HTML", disable_web_page_preview=True))
+            post["_blob"] = blob        # решті читачів качати вдруге не треба
+
+    # Підпис до фото Telegram обмежує 1024 знаками, звичайний текст — 4096.
+    parts = split_messages(title, body, post["link"],
+                           first_limit=1024 if blob else 4096)
+
+    if blob:
+        if not send_photo(uid, blob, parts[0]):
+            log.info("фото не пішло — шлю самим текстом")
+            parts = split_messages(title, body, post["link"], first_limit=4096)
+            blob = None
+        else:
+            parts = parts[1:]
+
+    for i, chunk in enumerate(parts):
+        if not api("sendMessage", chat_id=uid, text=chunk, parse_mode="HTML",
+                   disable_web_page_preview=True):
+            return False
+        if i + 1 < len(parts):
+            time.sleep(0.4)
+    return True
 
 
 def broadcast(post, title):
