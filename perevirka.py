@@ -282,6 +282,8 @@ config.QUIET_HOURS = (23, 8)
 # ─────────────────────────  доступ  ─────────────────────────
 block("Хто пройде в бота")
 fresh_db()
+_saved_code = config.INVITE_CODE
+config.INVITE_CODE = "test-perepustka"
 sent = []
 n.reply = lambda chat, text: sent.append((chat, text))
 def start(uid, uname, payload=""):
@@ -299,6 +301,11 @@ check("власниці прийшло сповіщення про чужого"
 start(4, "third", config.INVITE_CODE)
 start(5, "fourth", config.INVITE_CODE)
 check("перепустка вичерпується", not n.is_allowed(5, "fourth"))
+config.INVITE_CODE = ""
+start(6, "pizniy", "test-perepustka")
+check("із закритою перепусткою не пускає нікого", not n.is_allowed(6, "pizniy"))
+check("вже підключені лишаються", n.is_allowed(2, "druh"))
+config.INVITE_CODE = _saved_code
 
 block("Команди")
 fresh_db()
