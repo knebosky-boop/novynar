@@ -366,10 +366,31 @@ def is_service(text):
     return False
 
 
+def starts_word(low, stem):
+    """Шукаємо основу з початку слова: «гази» не сховається в «магазині»."""
+    return re.search(r"(?<![\w'’-])" + re.escape(stem), low) is not None
+
+
+def off_topic(low, channel):
+    """Тема, якої від цього каналу не треба (напр. суто ізраїльські новини)."""
+    rule = getattr(config, "CHANNEL_TOPIC_SKIP", {}).get(channel or "")
+    if not rule:
+        return None
+    hit = next((w for w in rule.get("skip", []) if starts_word(low, w)), None)
+    if not hit:
+        return None
+    if any(starts_word(low, w) for w in rule.get("unless", [])):
+        return None
+    return hit
+
+
 def passes_filters(text, has_media, channel=None):
     if is_service(text):
         return False, "службова позначка"
     low = (text or "").lower()
+    theme = off_topic(low, channel)
+    if theme:
+        return False, "не наша тема («%s»)" % theme
     floor = getattr(config, "CHANNEL_MIN_LENGTH", {}).get(channel or "")
     if floor and len(low.strip()) < floor:
         return False, "закоротке для цього каналу"
