@@ -290,12 +290,18 @@ def is_alert(text):
 
     soft = [m for m in getattr(config, "LIVE_ATTACK_MARKERS", []) if m in low]
     if soft and len(low) <= getattr(config, "LIVE_ATTACK_MAX_LEN", 400):
+        # «збили 42 шахеди минулої ночі» — це підсумок, а не сигнал тривоги
+        if any(w in low for w in getattr(config, "NEWS_MARKERS", [])):
+            return False
         return soft[0]
     return False
 
 
-def passes_filters(text, has_media):
+def passes_filters(text, has_media, channel=None):
     low = (text or "").lower()
+    floor = getattr(config, "CHANNEL_MIN_LENGTH", {}).get(channel or "")
+    if floor and len(low.strip()) < floor:
+        return False, "закоротке для цього каналу"
     marker = is_alert(text)
     if marker:
         return False, "оперативка («%s»)" % marker
@@ -403,6 +409,8 @@ def fetch_channel(channel):
 # ─────────────────────────────  надсилання  ─────────────────────────────
 
 def api(method, **params):
+    if method in ("sendMessage", "sendPhoto") and getattr(config, "SILENT", False):
+        params.setdefault("disable_notification", True)
     for attempt in range(3):
         try:
             r = requests.post(API + method, data=params, timeout=60)
@@ -447,7 +455,9 @@ def send_photo(uid, blob, caption):
         try:
             r = requests.post(API + "sendPhoto",
                               data={"chat_id": uid, "caption": caption,
-                                    "parse_mode": "HTML"},
+                                    "parse_mode": "HTML",
+                                    "disable_notification":
+                                        bool(getattr(config, "SILENT", False))},
                               files={"photo": ("news.jpg", blob, "image/jpeg")},
                               timeout=120)
             j = r.json()
@@ -683,7 +693,7 @@ def round_trip():
             fresh = fresh[-config.MAX_PER_ROUND:]
 
         for post in fresh:
-            ok, why = passes_filters(post["text"], bool(post["photo"] or post["video"]))
+            ok, why = passes_filters(post["text"], bool(post["photo"] or post["video"]), ch)
             if not ok:
                 log.info("пропуск %s/%s: %s", ch, post["id"], why)
                 continue
