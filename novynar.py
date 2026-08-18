@@ -486,6 +486,14 @@ def fetch_channel(channel):
 
         vid = box.select_one("video.tgme_widget_message_video")
         video_url = vid.get("src") if vid else None
+        # У списку постів частина відео віддається лише обкладинкою, без <video>.
+        # Такий пост — теж відео: посилання дістанемо з окремої сторінки.
+        player = box.select_one(".tgme_widget_message_video_player")
+        has_video = bool(vid or player or
+                         box.select_one(".tgme_widget_message_video_thumb"))
+        # Telegram сам позначає частину відео як недоступні для вебу —
+        # такі не віддає ні тут, ні на сторінці поста. Лишається посилання.
+        web_blocked = bool(player and "not_supported" in (player.get("class") or []))
         is_gif = bool(box.select_one(".tgme_widget_message_gif"))
         is_round = bool(box.select_one(".tgme_widget_message_roundvideo"))
         dur = box.select_one(".message_video_duration")
@@ -496,8 +504,9 @@ def fetch_channel(channel):
             "channel": channel,
             "text": text,
             "photo": photo,
-            "video": bool(vid),
+            "video": has_video,
             "video_url": video_url,
+            "video_blocked": web_blocked and not video_url,
             "gif": is_gif,
             "round": is_round,
             "duration": dur.get_text(strip=True) if dur else "",
@@ -603,6 +612,32 @@ def grab_photo(url):
     except Exception as e:
         log.info("картинка не завантажилась: %s", e)
         return None
+
+
+def resolve_video(post):
+    """Якщо в списку відео без посилання — беремо його зі сторінки самого поста."""
+    if post.get("video_url") or post.get("_vresolved") or post.get("video_blocked"):
+        return post.get("video_url")
+    post["_vresolved"] = True
+    link = post.get("link") or ""
+    m = re.search(r"t\.me/([^/]+)/(\d+)", link)
+    if not m:
+        return None
+    try:
+        r = requests.get("https://t.me/%s/%s?embed=1" % (m.group(1), m.group(2)),
+                         headers={"User-Agent": UA}, timeout=30)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, "lxml")
+        vid = soup.select_one("video.tgme_widget_message_video")
+        if vid and vid.get("src"):
+            post["video_url"] = vid["src"]
+            if soup.select_one(".tgme_widget_message_gif"):
+                post["gif"] = True
+            log.info("посилання на відео дотягнуто зі сторінки поста")
+            return post["video_url"]
+    except Exception as e:
+        log.info("сторінка поста не відповіла: %s", e)
+    return None
 
 
 def grab_video(url):
@@ -740,8 +775,18 @@ def split_messages(title, body, link, first_limit, rest_limit=4096, max_parts=8)
         prefix = head if first else ""
         limit = (first_limit if first else rest_limit) - len(prefix) - len(tail) - 30
         piece = carry + rest
-        if len(piece) <= limit or len(parts) + 1 >= max_parts:
+        if len(piece) <= limit:
             parts.append(prefix + piece)
+            break
+        if len(parts) + 1 >= max_parts:
+            # Довше вже не ріжемо, але й за межу лізти не можна:
+            # обрізаємо останню частину й кажемо, де читати решту.
+            pos = cut_pos(piece, limit - 40)
+            raw = piece[:pos].rstrip()
+            stack = open_stack(raw)
+            parts.append(prefix + raw
+                         + "".join("</%s>" % t for t, _ in reversed(stack))
+                         + "\n\n<i>…решта за посиланням</i>")
             break
         pos = cut_pos(piece, limit)
         raw = piece[:pos].rstrip()
@@ -808,6 +853,8 @@ def send_post(uid, post, title):
     body = post["text"] or ""
 
     # 1) справжнє відео, якщо дістали
+    if post.get("video") and not post.get("video_url") and "_novideo" not in post:
+        resolve_video(post)
     if post.get("video_url") and "_novideo" not in post:
         blob = post.get("_vblob")
         if blob is None and not post.get("_vid_id"):
@@ -837,10 +884,10 @@ def send_post(uid, post, title):
             post["_novideo"] = True
 
     # 2) не вийшло — обкладинка чи просто текст
-    if post.get("video") and "відео" not in body.lower():
-        mark = "🎬 у пості є відео"
+    if post.get("video"):
+        mark = "🎬 <i>відео — за посиланням нижче</i>"
         if post.get("duration"):
-            mark += " (%s)" % post["duration"]
+            mark = "🎬 <i>відео (%s) — за посиланням нижче</i>" % post["duration"]
         body = (body + "\n\n" + mark).strip()
 
     blob = None

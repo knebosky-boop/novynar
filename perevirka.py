@@ -502,6 +502,15 @@ n.send_post(1, _gif, "Тарас")
 check("гіфка йде гіфкою", any(m == "sendAnimation" for m, _ in _calls))
 
 _calls[:] = []
+_blocked = dict(_vid); _blocked["video_url"] = None; _blocked["video_blocked"] = True
+n.send_post(1, _blocked, "Тарас")
+check("недоступне вебу відео — обкладинка", any(m == "sendPhoto" for m, _ in _calls))
+check("і чесна позначка про відео",
+      any("відео" in c and "посиланням" in c for _, c in _calls),
+      [c for _, c in _calls][0][:44] if _calls else "")
+check("сторінку поста дарма не смикаємо", _blocked.get("_vresolved") is None)
+
+_calls[:] = []
 n.grab_video = lambda url: None          # відео завелике або недоступне
 _big = dict(_vid)
 n.send_post(1, _big, "Тарас")
