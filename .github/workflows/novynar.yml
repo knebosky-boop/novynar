@@ -2,7 +2,7 @@ name: Новинар
 
 on:
   schedule:
-    - cron: "*/10 * * * *"      # кожні 10 хвилин
+    - cron: "*/15 * * * *"      # кожні 15 хвилин (GitHub часто зволікає)
   workflow_dispatch:             # і кнопка «запустити зараз»
 
 concurrency:
@@ -13,7 +13,7 @@ jobs:
   obhid:
     name: Обхід каналів
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -32,13 +32,13 @@ jobs:
           key: novynar-db-${{ github.run_id }}
           restore-keys: novynar-db-
 
-      - name: Обійти канали і роздати новини
+      - name: Зміна на 13 хвилин — обхід кожні 2 хвилини
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           NOVYNAR_OWNER: ${{ secrets.NOVYNAR_OWNER }}
           NOVYNAR_READERS: ${{ secrets.NOVYNAR_READERS }}
           TZ: Europe/Kyiv
-        run: python novynar.py --once
+        run: python novynar.py --loop-minutes 13
 
       - name: Запам'ятати
         if: always()

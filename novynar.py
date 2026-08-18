@@ -916,6 +916,26 @@ def main():
         log.info("прохід завершено")
         return
 
+    if "--loop-minutes" in sys.argv:
+        # Розклад GitHub примхливий: буває, будить раз на пів години замість
+        # десяти хвилин. Тому один запуск працює довго, обходячи канали
+        # кожні POLL_SECONDS, і сам завершується перед наступним пробудженням.
+        minutes = float(sys.argv[sys.argv.index("--loop-minutes") + 1])
+        deadline = time.time() + minutes * 60
+        n = 0
+        while time.time() < deadline:
+            n += 1
+            try:
+                once()
+            except Exception as e:
+                log.error("збій проходу: %s", e)
+            left = deadline - time.time()
+            if left <= config.POLL_SECONDS:
+                break
+            time.sleep(config.POLL_SECONDS)
+        log.info("зміну відпрацьовано: %s обходів за %.0f хв", n, minutes)
+        return
+
     threading.Thread(target=listener, daemon=True).start()
     watcher()
 
