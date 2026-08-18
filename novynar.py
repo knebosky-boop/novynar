@@ -1086,10 +1086,12 @@ def handle_command(msg):
                     "/status — стан\n/digest — віддати накопичене\n"
                     "/stop, /start — вимкнути / увімкнути себе\n"
                     "— лише для власниці —\n"
+                    "/лист <i>текст</i> — передати особисте слово читачам\n"
                     "/add @канал, /del @канал\n"
                     "/allow @людина, /deny @людина\n/pause, /resume")
 
-    elif cmd in ("/add", "/del", "/allow", "/deny", "/pause", "/resume"):
+    elif cmd in ("/add", "/del", "/allow", "/deny", "/pause", "/resume",
+                 "/лист", "/напиши"):
         if not is_owner(uid):
             reply(chat, "Це може лише власниця.")
             return
@@ -1098,6 +1100,8 @@ def handle_command(msg):
 
 def handle_owner_command(chat, cmd, arg):
     global paused
+    if cmd in ("/лист", "/напиши"):
+        return send_letter(chat, arg)
     if cmd == "/pause":
         paused = True
         reply(chat, "Призупинив збір. /resume — продовжити.")
@@ -1145,6 +1149,35 @@ def handle_owner_command(chat, cmd, arg):
             c.execute("UPDATE people SET active = 0 WHERE lower(username) = ? "
                       "AND is_owner = 0", (who,))
         reply(chat, "Відрізав <b>@%s</b> від потоку." % html_mod.escape(who))
+
+
+def send_letter(chat, text):
+    """Особисте слово від власниці — бот передає його читачам."""
+    text = (text or "").strip()
+    if not text:
+        reply(chat, "Напишіть так: <code>/лист Скучаю за тобою</code>\n"
+                    "Бот передасть це тим, хто отримує новини.")
+        return
+    if len(text) > 3500:
+        reply(chat, "Задовге — до 3500 знаків.")
+        return
+
+    body = "💛 " + html_mod.escape(text)
+    got = []
+    for p in readers():
+        if p["is_owner"]:
+            continue
+        if api("sendMessage", chat_id=p["user_id"], text=body,
+               parse_mode="HTML", disable_notification=False):
+            got.append(person_name(p["user_id"], p["username"]))
+        time.sleep(config.SEND_DELAY)
+
+    if got:
+        reply(chat, "✅ Надіслано — %s:\n\n%s" % (
+            ", ".join(html_mod.escape(g) for g in got), body))
+        log.info("лист передано: %s", ", ".join(got))
+    else:
+        reply(chat, "Нема кому передати — жоден читач не підключений.")
 
 
 def listener():

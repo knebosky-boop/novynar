@@ -443,6 +443,38 @@ check("чужому команди не даються", cmd("/add @x", uid=99, 
       "власниц" in cmd("/add @x", uid=99, uname="hacker"))
 check("/stop вимикає читача", "Зупинив" in cmd("/stop"))
 
+block("Особистий лист від власниці")
+fresh_db()
+_out, _says = [], []
+_real_api2 = n.api
+_real_reply = n.reply
+n.api = lambda m, **kw: _out.append((kw.get("chat_id"), kw.get("text", ""),
+                                     kw.get("disable_notification"))) or {"ok": True}
+n.reply = lambda chat, text: _says.append(text)
+with n.db() as c:
+    c.execute("INSERT INTO people VALUES (1,'kate',1,1)")
+    c.execute("INSERT INTO people VALUES (2,'druh',0,1)")
+
+def letter(text, uid=1):
+    _out[:] = []
+    _says[:] = []
+    n.handle_command({"text": text, "from": {"id": uid, "username": ""}, "chat": {"id": uid}})
+    return " ".join(_says)
+
+r = letter("/лист Скучаю за тобою")
+check("лист доходить читачеві", bool(_out) and _out[0][0] == 2)
+check("лист зі звуком", bool(_out) and _out[0][2] is False)
+check("власниці — підтвердження", "Надіслано" in r)
+letter("/напиши Гарного дня!")
+check("працює і /напиши", bool(_out) and "Гарного дня" in _out[0][1])
+check("порожній лист — підказка", "Напишіть так" in letter("/лист"))
+letter("/лист <b>хитрий</b> & текст")
+check("небезпечні символи екрануються", bool(_out) and "&lt;b&gt;" in _out[0][1])
+letter("/лист Привіт", uid=2)
+check("читачеві така команда недоступна", not _out)
+n.api = _real_api2
+n.reply = _real_reply
+
 # ─────────────────────────  стійкість  ─────────────────────────
 block("Стійкість до збоїв")
 check("порожній текст не шлемо", not n.passes_filters("", False, "babel")[0])
