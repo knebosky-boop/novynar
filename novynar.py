@@ -383,6 +383,30 @@ def is_service(text):
     return False
 
 
+def is_greeting(text):
+    """Пост-побажання замість новини: «Доброй ночи» плюс підпис каналу.
+
+    MIN_LENGTH такого не ловить — підпис @канал добирає довжину, а картинка
+    взагалі проводить пост в обхід порога. Тому дивимось на текст ПІСЛЯ зняття
+    розмітки, посилань і підписів: лишилось саме побажання і нічого більше —
+    ріжемо. Новина «Зеленський побажав добраніч захисникам» довша за
+    GREETING_MAX_LEN і проходить."""
+    pats = getattr(config, "GREETING_PATTERNS", [])
+    if not pats:
+        return ""
+    bare = re.sub(r"<[^>]+>", " ", text or "")
+    bare = re.sub(r"https?://\S+", " ", bare)
+    bare = re.sub(r"@[\w_]+", " ", bare)          # підпис каналу в кінці поста
+    bare = norm(bare)
+    if not bare or len(bare) > getattr(config, "GREETING_MAX_LEN", 60):
+        return ""
+    for pat in pats:
+        m = re.search(pat, bare)
+        if m:
+            return m.group(0)
+    return ""
+
+
 def off_topic(low, channel):
     """Тема, якої від цього каналу не треба (напр. суто ізраїльські новини)."""
     rule = getattr(config, "CHANNEL_TOPIC_SKIP", {}).get(channel or "")
@@ -411,6 +435,9 @@ def is_fundraising(text):
 def passes_filters(text, has_media, channel=None):
     if is_service(text):
         return False, "службова позначка"
+    hello = is_greeting(text)
+    if hello:
+        return False, "побажання («%s»)" % hello
     low = (text or "").lower()
     theme = off_topic(low, channel)
     if theme:
