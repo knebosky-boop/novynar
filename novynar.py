@@ -407,6 +407,22 @@ def is_greeting(text):
     return ""
 
 
+def is_daily_toll(text):
+    """Щоденне зведення ОВА «вбито стількох, поранено стількох» — не новина.
+
+    Ріжемо не за словом «поранено», а за зв'язкою підрахунку з періодом
+    («за добу», «за 18 серпня»). Новина про конкретний обстріл — «Трьох
+    цивільних поранено: наслідки бомбардування Краматорська» — періоду
+    не має і проходить."""
+    low = re.sub(r"<[^>]+>", " ", text or "").lower()
+    low = re.sub(r"\s+", " ", low)
+    for pat in getattr(config, "DAILY_TOLL_PATTERNS", []):
+        m = re.search(pat, low)
+        if m:
+            return re.sub(r"\s+", " ", m.group(0))[:60]
+    return ""
+
+
 def off_topic(low, channel):
     """Тема, якої від цього каналу не треба (напр. суто ізраїльські новини)."""
     rule = getattr(config, "CHANNEL_TOPIC_SKIP", {}).get(channel or "")
@@ -438,6 +454,9 @@ def passes_filters(text, has_media, channel=None):
     hello = is_greeting(text)
     if hello:
         return False, "побажання («%s»)" % hello
+    toll = is_daily_toll(text)
+    if toll:
+        return False, "щоденна зведена статистика («%s»)" % toll
     low = (text or "").lower()
     theme = off_topic(low, channel)
     if theme:
