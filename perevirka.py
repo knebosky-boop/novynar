@@ -862,13 +862,25 @@ _notes = [kw for m, kw in _calls if m == "sendMessage"]
 check("виправлений текст замінює старий", len(_edits) == 2, "правок: %s" % len(_edits))
 check("у виправленому тексті нова редакція",
       bool(_edits) and "ПРАВОМІРНИМ" in _edits[0].get("text", ""))
-check("читача попереджають про правку",
-      len(_notes) == 2 and all("виправив" in k.get("text", "") for k in _notes))
+check("мовчки: записки про правку немає", not _notes,
+      "записок: %s" % len(_notes))
+
+# з EDIT_NOTICE = True записка повертається — і відповіддю на саму новину
+_notice_was0 = getattr(n.config, "EDIT_NOTICE", True)
+n.config.EDIT_NOTICE = True
+TEXT_NEW_2 = TEXT_NEW + " Уточнення: рішення набирає чинності з наступного місяця."
+_calls[:] = []
+n.check_edits("tgp_news", [dict(_post, text=TEXT_NEW_2)], "Тарас Григорович")
+_notes = [kw for m, kw in _calls if m == "sendMessage"]
+check("з EDIT_NOTICE читача попереджають про правку",
+      len(_notes) == 2 and all("виправив" in k.get("text", "") for k in _notes),
+      "записок: %s" % len(_notes))
 check("попередження відповіддю на саму новину",
       bool(_notes) and _notes[0].get("reply_to_message_id"))
+n.config.EDIT_NOTICE = _notice_was0
 
 _calls[:] = []
-n.check_edits("tgp_news", [dict(_post, text=TEXT_NEW)], "Тарас Григорович")
+n.check_edits("tgp_news", [dict(_post, text=TEXT_NEW_2)], "Тарас Григорович")
 check("та сама правка вдруге не йде", not _calls, "викликів: %s" % len(_calls))
 
 _calls[:] = []
@@ -926,11 +938,42 @@ _calls[:] = []
 n.check_edits("babel", [dict(_long, text=TEXT_OLD + " " + "Уточнення до новини. " * 400)],
               "Бабель")
 _new_msgs = [kw.get("text", "") for m, kw in _calls if m == "sendMessage"]
-check("новина розрослась — шлемо виправлену окремо",
-      any("ВИПРАВЛЕНО" in t for t in _new_msgs),
-      "повідомлень: %s" % len(_new_msgs))
+check("новина розрослась, але мовчимо — нічого не шлемо",
+      not _new_msgs, "повідомлень: %s" % len(_new_msgs))
 check("на місці таку правку не вносимо",
       not [1 for m, _ in _calls if m == "editMessageText"])
+
+# з увімкненою запискою поведінка стара: шлемо виправлену новину окремо
+_notice_was = getattr(n.config, "EDIT_NOTICE", True)
+n.config.EDIT_NOTICE = True
+fresh_db()
+with n.db() as c:
+    c.execute("INSERT INTO people VALUES (1,'kate',1,1)")
+n.send_post(1, dict(_long), "Бабель")
+_calls[:] = []
+n.check_edits("babel", [dict(_long, text=TEXT_OLD + " " + "Уточнення до новини. " * 400)],
+              "Бабель")
+_new_msgs = [kw.get("text", "") for m, kw in _calls if m == "sendMessage"]
+check("з EDIT_NOTICE новина розрослась — шлемо виправлену окремо",
+      any("ВИПРАВЛЕНО" in t for t in _new_msgs),
+      "повідомлень: %s" % len(_new_msgs))
+
+# правка на місці: текст оновлюємо, а записки «канал виправив» не шлемо
+fresh_db()
+with n.db() as c:
+    c.execute("INSERT INTO people VALUES (1,'kate',1,1)")
+_short = {"channel": "babel", "id": 44, "text": TEXT_OLD, "photo": None,
+          "video": False, "link": "https://t.me/babel/44"}
+n.send_post(1, dict(_short), "Бабель")
+n.config.EDIT_NOTICE = False
+_calls[:] = []
+n.check_edits("babel", [dict(_short, text=TEXT_NEW)], "Бабель")
+check("текст у читача правиться на місці",
+      [1 for m, _ in _calls if m == "editMessageText"])
+check("записки «канал виправив» немає",
+      not [1 for m, kw in _calls
+           if m == "sendMessage" and "виправив" in kw.get("text", "")])
+n.config.EDIT_NOTICE = _notice_was
 
 # розмітка змінилась, слова ті самі — це не виправлення
 check("інші теги при тих самих словах — не правка",

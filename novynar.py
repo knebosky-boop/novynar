@@ -1066,7 +1066,7 @@ def push_edit(row, post, title):
     body = ((post.get("text") or "") + (row["suffix"] or "")).strip()
     parts = split_messages(title, body, post["link"],
                            first_limit=int(row["first_limit"] or 4096))
-    big = edit_is_big(row["body"] or "", body)
+    big = edit_is_big(row["body"] or "", body) and getattr(config, "EDIT_NOTICE", True)
 
     by_user = {}
     for m in msgs:
@@ -1104,6 +1104,7 @@ def push_edit(row, post, title):
         elif big:
             # На місці не вийшло (інша кількість частин або застаре
             # повідомлення) — шлемо виправлену новину окремо.
+            # Мовчки (EDIT_NOTICE = False) сюди не заходимо взагалі.
             again = split_messages("✏️ ВИПРАВЛЕНО · " + short_title(title),
                                    body, post["link"], first_limit=4096)
             for j, chunk in enumerate(again):
