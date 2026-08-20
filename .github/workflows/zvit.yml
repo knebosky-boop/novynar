@@ -1,0 +1,38 @@
+name: Звіт про повтори
+
+# Службова дія: дістає живу базу з кешу й друкує, що саме приходило читачам.
+# Нічого нікому не надсилає, базу не змінює й назад у кеш не кладе.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  zvit:
+    name: Звіт
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Залежності
+        run: pip install -q -r requirements.txt
+
+      - name: Дістати базу з кешу
+        uses: actions/cache/restore@v4
+        with:
+          path: novynar.db
+          key: zvit-nikoly-ne-zbigaietsia
+          restore-keys: novynar-db-
+
+      - name: Звіт
+        env:
+          TZ: Europe/Kyiv
+        run: |
+          if [ ! -f novynar.db ]; then echo "бази в кеші немає"; exit 1; fi
+          ls -l novynar.db
+          python zvit.py novynar.db
