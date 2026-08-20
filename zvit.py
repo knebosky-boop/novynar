@@ -169,3 +169,36 @@ for zbig, a, b, _ in pary:
             "   ⚠ ОДНА СПРОСТОВУЄ ІНШУ?" if nebezpechna_para(a["body"], b["body"]) else ""))
         print("     A (%s): %s" % (a["channel"], " ".join((a["body"] or "").split())[:110]))
         print("     B (%s): %s" % (b["channel"], " ".join((b["body"] or "").split())[:110]))
+
+
+zaholovok("ДЕДУП БЕЗ ВІКНА: нижчі пороги + захист спростувань")
+# Придержка спрацьовує лише у вузькому вікні, а канали розходяться на години.
+# Тому дивимось інший шлях: знизити пороги самого дедупу (він памʼятає 48 год)
+# і не дати йому склеїти новину з її спростуванням.
+for por, opor in [(0.40, 3), (0.35, 3), (0.35, 4), (0.30, 4)]:
+    skleyit, ubereh = [], []
+    for zbig, a, b, _ in pary:
+        anc = n.anchors(a["body"] or "") & n.anchors(b["body"] or "")
+        if zbig >= por and len(anc) >= opor:
+            (ubereh if n.refutes(a["body"]) != n.refutes(b["body"]) else skleyit).append(
+                (zbig, a, b, anc))
+    print("  %.2f + %s опор → приберемо %s повторів; спростувань уберегло: %s"
+          % (por, opor, len(skleyit), len(ubereh)))
+
+print("\n  ── ЩО САМЕ ПРИБЕРЕТЬСЯ ПРИ 0.35 + 3 ОПОРИ (з захистом спростувань) ──")
+for zbig, a, b, _ in pary:
+    anc = n.anchors(a["body"] or "") & n.anchors(b["body"] or "")
+    if zbig >= 0.35 and len(anc) >= 3 and n.refutes(a["body"]) == n.refutes(b["body"]):
+        print("\n  збіг %.0f%%, +%d хв, опори: %s" % (
+            zbig * 100, (b["ts"] - a["ts"]) // 60, ", ".join(sorted(anc)[:8])))
+        print("     ЗАЛИШИТЬСЯ (%s): %s" % (a["channel"], " ".join((a["body"] or "").split())[:105]))
+        print("     ЗНИКНЕ     (%s): %s" % (b["channel"], " ".join((b["body"] or "").split())[:105]))
+
+print("\n  ── ЩО ВРЯТУЄ ЗАХИСТ СПРОСТУВАНЬ ──")
+for zbig, a, b, _ in pary:
+    anc = n.anchors(a["body"] or "") & n.anchors(b["body"] or "")
+    if zbig >= 0.35 and len(anc) >= 3 and n.refutes(a["body"]) != n.refutes(b["body"]):
+        print("\n  збіг %.0f%%, +%d хв — склеїлись би, але одна спростовує іншу:"
+              % (zbig * 100, (b["ts"] - a["ts"]) // 60))
+        print("     A (%s): %s" % (a["channel"], " ".join((a["body"] or "").split())[:105]))
+        print("     B (%s): %s" % (b["channel"], " ".join((b["body"] or "").split())[:105]))
