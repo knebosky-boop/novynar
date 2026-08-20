@@ -979,6 +979,58 @@ n.config.EDIT_NOTICE = _notice_was
 check("інші теги при тих самих словах — не правка",
       n.text_hash("<b>Суд</b> ухвалив рішення") == n.text_hash("<i>Суд</i> ухвалив рішення"))
 
+# ── відбиток бачить розділові знаки, регістр і посилання (з 20.08.2026) ──
+def _diff(a, b):
+    return n.text_hash(a) != n.text_hash(b)
+
+check("крапка замість знака питання — правка",
+      _diff("Мудру затримали.", "Мудру затримали?"))
+check("кома змінює зміст — правка",
+      _diff("Стратити не можна, помилувати", "Стратити, не можна помилувати"))
+check("змінена цифра в часі — правка",
+      _diff("Засідання о 10:00", "Засідання о 10:30"))
+check("КАПС — правка", _diff("Суд скасував рішення", "Суд СКАСУВАВ рішення"))
+check("дефіс у слові — правка", _diff("пресслужба суду", "прес-служба суду"))
+check("змінене посилання — правка",
+      _diff("Деталі: https://sud.gov.ua/a", "Деталі: https://sud.gov.ua/b"))
+check("переверстані абзаци — не правка",
+      not _diff("Суд ухвалив рішення.\n\nДеталі згодом.",
+                "Суд ухвалив рішення.\n \n  Деталі згодом.  "))
+check("HTML-сутності — не правка",
+      not _diff("ПАТ &laquo;Дніпро&raquo; та АТ &amp; Ко",
+                "ПАТ «Дніпро» та АТ & Ко"))
+
+# жива правка самих лише розділових знаків: текст оновлюємо, читача не смикаємо
+fresh_db()
+with n.db() as c:
+    c.execute("INSERT INTO people VALUES (1,'kate',1,1)")
+_dots = {"channel": "babel", "id": 55, "text": "Мудру затримали.", "photo": None,
+         "video": False, "link": "https://t.me/babel/55"}
+n.send_post(1, dict(_dots), "Бабель")
+_calls[:] = []
+n.check_edits("babel", [dict(_dots, text="Мудру затримали?")], "Бабель")
+check("правку розділових знаків доводимо до читача",
+      [1 for m, kw in _calls
+       if m == "editMessageText" and "затримали?" in kw.get("text", "")],
+      ", ".join(m for m, _ in _calls) or "нічого")
+check("і робимо це мовчки",
+      not [1 for m, _ in _calls if m == "sendMessage"])
+
+# стара база після оновлення коду: відбиток іншого зразка, текст той самий
+fresh_db()
+with n.db() as c:
+    c.execute("INSERT INTO people VALUES (1,'kate',1,1)")
+n.send_post(1, dict(_dots), "Бабель")
+with n.db() as c:
+    c.execute("UPDATE sent SET hash = ? WHERE post_id = 55", (n.plain(_dots["text"]),))
+_calls[:] = []
+n.check_edits("babel", [dict(_dots)], "Бабель")
+check("старий відбиток у базі — читача не турбуємо", not _calls,
+      "викликів: %s" % len(_calls))
+with n.db() as c:
+    _h = c.execute("SELECT hash FROM sent WHERE post_id = 55").fetchone()["hash"]
+check("старий відбиток тихо замінюється новим", _h == n.text_hash(_dots["text"]))
+
 block("Тихі правки: крайні випадки")
 
 # Telegram дає боту правити свої повідомлення 48 годин. Далі editMessageText

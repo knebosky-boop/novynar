@@ -991,9 +991,18 @@ def plain(text):
     return norm(re.sub(r"<[^>]+>", " ", text or ""))
 
 
+def verbatim(text):
+    """Текст без розмітки, але слово в слово: із розділовими знаками, регістром
+    і посиланнями. plain() усе це знімає — і правка «затримали?» → «затримали!»
+    або «не о 10:00, а о 10:30» лишалась непоміченою. Зайві пробіли й переноси
+    рядків не рахуємо: канал міг просто переверстати абзац."""
+    t = html_mod.unescape(re.sub(r"<[^>]+>", " ", text or ""))
+    return re.sub(r"\s+", " ", t).strip()
+
+
 def text_hash(text):
     """Відбиток тексту поста — за ним бачимо, що канал його переписав."""
-    return hashlib.sha1(plain(text).encode("utf-8")).hexdigest()
+    return hashlib.sha1(verbatim(text).encode("utf-8")).hexdigest()
 
 
 def post_ref(post):
@@ -1143,6 +1152,14 @@ def check_edits(channel, posts, title=""):
         if new_hash == row["hash"]:
             continue
         body = ((post.get("text") or "") + (row["suffix"] or "")).strip()
+        if verbatim(body) == verbatim(row["body"] or ""):
+            # Відбиток інший, а текст той самий — так буває один раз після
+            # оновлення коду, коли в базі лежать відбитки старого зразка.
+            # Читача не чіпаємо, просто перезаписуємо позначку.
+            with db() as c:
+                c.execute("UPDATE sent SET hash = ? WHERE channel = ? AND post_id = ?",
+                          (new_hash, channel, post["id"]))
+            continue
         big = edit_is_big(row["body"] or "", body)
         log.info("%s/%s: канал виправив пост (%s)", channel, post["id"],
                  "суттєво" if big else "дрібниця")
