@@ -88,3 +88,38 @@ for r in c.execute("SELECT channel, post_id, body, ts FROM sent ORDER BY ts DESC
     print("  %s  %-22s %-8s %s" % (time.strftime("%d.%m %H:%M", time.localtime(r["ts"])),
                                    r["channel"], r["post_id"],
                                    " ".join((r["body"] or "").split())[:70]))
+
+zaholovok("ЩО БУДЕ, ЯКЩО ЗНИЗИТИ ПОРОГИ (симуляція на живих новинах)")
+# Для кожної пари друкуємо спільні опори — видно, чим саме її можна зловити
+# і чи не зловиться разом із нею спростування («затримано» / «не затримували»).
+NEBEZPECHNI = ("не ", "спрост", "запереч", "не підтверд", "фейк", "опроверг", "не задерж")
+
+
+def nebezpechna_para(a, b):
+    la, lb = (a or "").lower(), (b or "").lower()
+    return any(s in la for s in NEBEZPECHNI) != any(s in lb for s in NEBEZPECHNI)
+
+
+varianty = [(0.35, 5), (0.35, 4), (0.35, 3), (0.40, 3), (0.30, 4), (0.30, 3)]
+print("  зараз ловиться: %s пар із %s (поріг 0.35 + 5 опор)"
+      % (sum(1 for p in pary if p[3]), len(pary)))
+print()
+for por, opor in varianty:
+    zlovyt, ryzyk = [], []
+    for zbig, a, b, _ in pary:
+        anc = n.anchors(a["body"] or "") & n.anchors(b["body"] or "")
+        if zbig >= por and len(anc) >= opor:
+            (ryzyk if nebezpechna_para(a["body"], b["body"]) else zlovyt).append(
+                (zbig, a, b, anc))
+    print("  поріг %.2f + %s опор → зловить %s пар, з них підозрілих (одна новина "
+          "спростовує іншу): %s" % (por, opor, len(zlovyt) + len(ryzyk), len(ryzyk)))
+
+print("\n  ── ПОДРОБИЦІ ДЛЯ 0.35 + 3 ОПОРИ ──")
+for zbig, a, b, _ in pary:
+    anc = n.anchors(a["body"] or "") & n.anchors(b["body"] or "")
+    if zbig >= 0.35 and len(anc) >= 3:
+        print("\n  збіг %.0f%%, опори: %s%s" % (
+            zbig * 100, ", ".join(sorted(anc)[:8]),
+            "   ⚠ ОДНА СПРОСТОВУЄ ІНШУ?" if nebezpechna_para(a["body"], b["body"]) else ""))
+        print("     A (%s): %s" % (a["channel"], " ".join((a["body"] or "").split())[:110]))
+        print("     B (%s): %s" % (b["channel"], " ".join((b["body"] or "").split())[:110]))
