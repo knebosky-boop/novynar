@@ -1736,6 +1736,15 @@ def bootstrap_sources():
             if name.lower() not in known:
                 c.execute("INSERT INTO sources (channel, title, last_id, active) "
                           "VALUES (?,?,0,1)", (name, name))
+        # Вимкнені в конфізі — вимикаємо й у базі. Позиція каналу лишається:
+        # повернемо його — читатиме далі, а не завалить історією.
+        for ch in getattr(config, "SOURCES_OFF", []):
+            name = ch.lstrip("@")
+            zminen = c.execute("UPDATE sources SET active = 0 "
+                               "WHERE LOWER(channel) = ? AND active = 1",
+                               (name.lower(),)).rowcount
+            if zminen:
+                log.info("канал %s вимкнено за списком SOURCES_OFF", name)
 
 
 def main():

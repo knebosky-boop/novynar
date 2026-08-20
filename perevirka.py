@@ -5,6 +5,7 @@
 """
 import os, re, sys, time
 import config, novynar as n
+_SOURCES_REAL = list(config.SOURCES)   # блок про вимкнення каналів його підміняє
 
 n.DB_PATH = "/tmp/nv_perevirka.db"
 PASS = FAIL = 0
@@ -305,6 +306,35 @@ for a, b, want, why in [
     same, sc = n.is_same_story(n.tokens(a), n.anchors(a), n.tokens(b), n.anchors(b))
     check(why, same == want, "збіг %.0f%%, спільних назв %s"
           % (sc * 100, len(n.anchors(a) & n.anchors(b))))
+
+block("Вимкнення каналу з конфіга")
+fresh_db()
+_off = list(config.SOURCES_OFF)
+config.SOURCES = ["tgp_news", "babel", "chorleb"]
+config.SOURCES_OFF = []
+n.bootstrap_sources()
+with n.db() as c:
+    c.execute("UPDATE sources SET last_id = 500 WHERE channel = 'babel'")
+    akt = [r["channel"] for r in c.execute("SELECT channel FROM sources WHERE active = 1")]
+check("спочатку читаються всі три", len(akt) == 3, ", ".join(sorted(akt)))
+
+config.SOURCES_OFF = ["babel"]
+n.bootstrap_sources()
+with n.db() as c:
+    akt = [r["channel"] for r in c.execute("SELECT channel FROM sources WHERE active = 1")]
+    row = c.execute("SELECT active, last_id FROM sources WHERE channel = 'babel'").fetchone()
+check("вимкнений канал більше не читається", "babel" not in akt, ", ".join(sorted(akt)))
+check("рядок каналу лишився, лише active = 0", row is not None and row["active"] == 0)
+check("позиція каналу вціліла — повернемо без завалу історією", row["last_id"] == 500,
+      "last_id = %s" % row["last_id"])
+
+config.SOURCES_OFF = []          # повернули — знову читається
+with n.db() as c:
+    c.execute("UPDATE sources SET active = 1 WHERE channel = 'babel'")
+    akt = [r["channel"] for r in c.execute("SELECT channel FROM sources WHERE active = 1")]
+check("повернути канал можна", "babel" in akt)
+config.SOURCES_OFF = _off
+config.SOURCES = _SOURCES_REAL
 
 block("Придержка сюжету: одна подія — одна новина")
 # Живі приклади з 19–20.08.2026: три канали переказують те саме своїми словами,
