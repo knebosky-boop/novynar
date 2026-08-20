@@ -6,6 +6,7 @@
 """
 import sqlite3, time, sys, collections
 import novynar as n
+import config
 
 DB = sys.argv[1] if len(sys.argv) > 1 else "novynar.db"
 c = sqlite3.connect(DB)
@@ -88,6 +89,51 @@ for r in c.execute("SELECT channel, post_id, body, ts FROM sent ORDER BY ts DESC
     print("  %s  %-22s %-8s %s" % (time.strftime("%d.%m %H:%M", time.localtime(r["ts"])),
                                    r["channel"], r["post_id"],
                                    " ".join((r["body"] or "").split())[:70]))
+
+zaholovok("ЯК СПРАЦЮЄ ПРИДЕРЖКА (симуляція на живих новинах)")
+# Придержка склеює лише те, що лежить у вікні одночасно. Тому головне питання
+# не «наскільки схожі», а «скільки хвилин між публікаціями».
+print("  розбіжність у часі всередині пар зі збігом >=30%:")
+kosh = collections.Counter()
+for zbig, a, b, _ in pary:
+    hv = (b["ts"] - a["ts"]) // 60
+    kosh["до 5 хв" if hv < 5 else "5–10 хв" if hv < 10 else "10–15 хв" if hv < 15
+         else "15–30 хв" if hv < 30 else "30–60 хв" if hv < 60 else "понад годину"] += 1
+for k in ("до 5 хв", "5–10 хв", "10–15 хв", "15–30 хв", "30–60 хв", "понад годину"):
+    if kosh[k]:
+        print("     %-14s %s пар" % (k, kosh[k]))
+
+print()
+print("  скільки пар склеїла б придержка (пороги %.2f + %s опор):"
+      % (config.HOLD_SIMILARITY, config.HOLD_ANCHORS))
+for vikno in (5, 10, 15, 30, 60):
+    skleyit, rozvela = [], []
+    for zbig, a, b, _ in pary:
+        if (b["ts"] - a["ts"]) > vikno * 60:
+            continue
+        same, _sc = n.one_story_now(n.tokens(a["body"] or ""), n.anchors(a["body"] or ""),
+                                    n.tokens(b["body"] or ""), n.anchors(b["body"] or ""))
+        if not same:
+            continue
+        if n.refutes(a["body"]) != n.refutes(b["body"]):
+            rozvela.append((zbig, a, b))
+        else:
+            skleyit.append((zbig, a, b))
+    print("     вікно %2d хв → склеїть %2d пар; спростувань уберегло: %s"
+          % (vikno, len(skleyit), len(rozvela)))
+
+print("\n  ── ЩО САМЕ СКЛЕЇТЬСЯ ПРИ ВІКНІ 10 ХВИЛИН ──")
+for zbig, a, b, _ in pary:
+    if (b["ts"] - a["ts"]) > 600:
+        continue
+    same, _sc = n.one_story_now(n.tokens(a["body"] or ""), n.anchors(a["body"] or ""),
+                                n.tokens(b["body"] or ""), n.anchors(b["body"] or ""))
+    if same and n.refutes(a["body"]) == n.refutes(b["body"]):
+        print("\n  збіг %.0f%%, +%d хв, опори: %s" % (
+            zbig * 100, (b["ts"] - a["ts"]) // 60,
+            ", ".join(sorted(n.anchors(a["body"] or "") & n.anchors(b["body"] or ""))[:8])))
+        print("     A (%s): %s" % (a["channel"], " ".join((a["body"] or "").split())[:110]))
+        print("     B (%s): %s" % (b["channel"], " ".join((b["body"] or "").split())[:110]))
 
 zaholovok("ЩО БУДЕ, ЯКЩО ЗНИЗИТИ ПОРОГИ (симуляція на живих новинах)")
 # Для кожної пари друкуємо спільні опори — видно, чим саме її можна зловити

@@ -306,6 +306,73 @@ for a, b, want, why in [
     check(why, same == want, "збіг %.0f%%, спільних назв %s"
           % (sc * 100, len(n.anchors(a) & n.anchors(b))))
 
+block("Придержка сюжету: одна подія — одна новина")
+# Живі приклади з 19–20.08.2026: три канали переказують те саме своїми словами,
+# збіг словами 40–43% — для дедупу (поріг 0.55) це «різні» новини, і читач
+# отримував їх усі. У вікні придержки вони мають склеїтись в одну.
+fresh_db()
+config.HOLD_MINUTES = 10
+_v1 = ("З російського полону в Україну повернулись 103 військових, серед них "
+       "захисники Маріуполя. Обмін відбувся за посередництва ОАЕ")
+_v2 = ("Додому з полону вдалося повернути 103-х українських захисників, це "
+       "військові з ЗСУ, ТрО, ВМС, НГУ та ДПС, серед них оборонці Маріуполя, "
+       "повідомив Координаційний штаб")
+_insh = "Кабмін ухвалив постанову про підвищення тарифів на електроенергію з вересня"
+
+g1 = n.hold({"channel": "babel", "text": _v1, "photo": None, "video": False,
+             "link": "https://t.me/babel/1", "id": 1}, "Бабель")
+g2 = n.hold({"channel": "chorleb", "text": _v2, "photo": None, "video": False,
+             "link": "https://t.me/chorleb/1", "id": 1}, "Чорний лебідь")
+g3 = n.hold({"channel": "tgp_news", "text": _insh, "photo": None, "video": False,
+             "link": "https://t.me/tgp_news/1", "id": 1}, "Тарас Григорович")
+check("дві версії однієї події — одна група", g1 == g2, "групи %s і %s" % (g1, g2))
+check("чужа новина в ту саму групу не лізе", g3 != g1, "група %s" % g3)
+
+# Спростування: різниця чотири хвилини, збіг 40%, три спільні опори — але це
+# ДВІ різні новини, склеїти їх означає лишити читача з неправдою.
+_zatr = "Ірину Мудру затримано. Наразі вона знаходиться на слідчих діях у НАБУ, — нардепи"
+_ne = ("Правоохоронці не затримували ексзаступницю керівника Офісу президента "
+       "Ірину Мудру, повідомив «Бабелю» її адвокат")
+g4 = n.hold({"channel": "tgp_news", "text": _zatr, "photo": None, "video": False,
+             "link": "https://t.me/tgp_news/2", "id": 2}, "Тарас Григорович")
+g5 = n.hold({"channel": "babel", "text": _ne, "photo": None, "video": False,
+             "link": "https://t.me/babel/2", "id": 2}, "Бабель")
+check("спростування — окрема новина, не версія", g4 != g5,
+      "збіг %.0f%%, групи %s і %s"
+      % (n.looks_similar(n.tokens(_zatr), n.tokens(_ne)) * 100, g4, g5))
+check("«не затримували» розпізнано як спростування", n.refutes(_ne))
+check("звичайну новину за спростування не беремо", not n.refutes(_zatr))
+
+# Недозріле не віддаємо, дозріле — віддаємо, і саме найдокладніше.
+_poslano = []
+_real_api = n.api
+n.api = lambda m, **kw: (_poslano.append((kw.get("chat_id"),
+                                          (kw.get("text") or "")[:200])) or
+                         {"ok": True, "message_id": len(_poslano) + 1})
+n.send_media = lambda *a, **k: "FILEID"
+n.time.sleep = lambda _s: None
+with n.db() as c:
+    c.execute("INSERT INTO people VALUES (1,'kate',1,1)")
+
+check("недозрілу групу не віддаємо", n.release_ready() == 0)
+with n.db() as c:                       # відкочуємо час — сюжети «відлежались»
+    c.execute("UPDATE holding SET ts = ts - ?", (int(config.HOLD_MINUTES * 60) + 60,))
+viddano = n.release_ready()
+check("дозріле віддано", viddano == 4, "груп віддано: %s" % viddano)
+_pro_polon = [t for _u, t in _poslano if "103" in t]
+check("подія про полон пішла ОДИН раз", len(_pro_polon) == 1,
+      "надіслано разів: %s" % len(_pro_polon))
+check("з двох версій узято найдокладнішу",
+      bool(_pro_polon) and "Координаційний штаб" in _pro_polon[0],
+      "у читача: %s" % (_pro_polon[0][:70] if _pro_polon else "—"))
+_pro_mudru = [t for _u, t in _poslano if "Мудр" in t]
+check("затримання і спростування пішли обидва", len(_pro_mudru) == 2,
+      "надіслано разів: %s" % len(_pro_mudru))
+check("притримане потрапляє в памʼять дедупу",
+      n.already_told(_v1) is not None)
+n.api = _real_api
+config.HOLD_MINUTES = 0
+
 block("Оновлення старої бази")
 import sqlite3 as _sq
 _old_path = n.DB_PATH

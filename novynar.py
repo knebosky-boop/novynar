@@ -288,6 +288,27 @@ def remember(channel, text):
                    int(time.time())))
 
 
+def refutes(text):
+    """Чи це спростування — «не затримували», «спростував», «фейк»."""
+    low = (text or "").lower()
+    return any(re.search(p, low) for p in getattr(config, "REFUTE_PATTERNS", []))
+
+
+def one_story_now(tok_a, anc_a, tok_b, anc_b):
+    """Чи це та сама подія — але у вузькому вікні придержки.
+
+    Пороги тут м'якші, ніж у дедупі: той пам'ятає 48 годин, а це — десять
+    хвилин. За дві доби три спільні назви бувають і в різних сюжетів, за
+    десять хвилин — навряд."""
+    score = looks_similar(tok_a, tok_b)
+    if score >= config.SIMILARITY:
+        return True, score
+    if score >= getattr(config, "HOLD_SIMILARITY", 0.35) and \
+            len(anc_a & anc_b) >= getattr(config, "HOLD_ANCHORS", 3):
+        return True, score
+    return False, score
+
+
 def weigh(post):
     """Наскільки версія докладна: довжина тексту плюс бонус за картинку."""
     return len(post.get("text") or "") + (250 if post.get("photo") else 0)
@@ -295,12 +316,17 @@ def weigh(post):
 
 def hold(post, title):
     """Кладемо новину в очікування — раптом хтось розповість докладніше."""
-    tok = tokens(post["text"])
+    tok, anc = tokens(post["text"]), anchors(post["text"])
+    sprostuvannia = refutes(post["text"])
     with db() as c:
         grp = None
         if config.SIMILARITY and len(tok) >= 5:
             for r in c.execute("SELECT id, grp, text FROM holding").fetchall():
-                if looks_similar(tok, tokens(r["text"])) >= config.SIMILARITY:
+                if refutes(r["text"]) != sprostuvannia:
+                    continue          # спростування — окрема новина, не версія
+                same, _ = one_story_now(tok, anc, tokens(r["text"]),
+                                        anchors(r["text"]))
+                if same:
                     grp = r["grp"]
                     break
         if grp is None:
