@@ -722,12 +722,35 @@ TEXT_OLD = ("Суд визнав протиправним рішення міс�
             "на воду для мешканців Дніпра, повідомляє пресслужба суду.")
 _post = {"channel": "tgp_news", "id": 77, "text": TEXT_OLD, "photo": None,
          "video": False, "link": "https://t.me/tgp_news/77"}
+# Ловимо журнал: до 20.08 факт надсилання не писався взагалі — у логах
+# GitHub Actions було видно самі відсіви, жодного підтвердження доставки.
+import logging as _logging
+_zhurnal = []
+class _CatchLog(_logging.Handler):
+    def emit(self, rec): _zhurnal.append(rec.getMessage())
+_h = _CatchLog()
+n.log.addHandler(_h)
+
 n.broadcast(dict(_post), "Тарас Григорович")
 with n.db() as c:
     saved = c.execute("SELECT * FROM sent").fetchall()
     ids = c.execute("SELECT * FROM sent_msg ORDER BY user_id").fetchall()
 check("надіслане запам'ятовується", len(saved) == 1 and saved[0]["post_id"] == 77)
 check("номери повідомлень записані обом", len(ids) == 2, "рядків: %s" % len(ids))
+_dost = [l for l in _zhurnal if l.startswith("надіслано")]
+check("факт надсилання пишеться в журнал", len(_dost) == 1,
+      _dost[0] if _dost else "у журналі порожньо")
+check("у записі є канал і посилання",
+      bool(_dost) and "tgp_news" in _dost[0] and "/77" in _dost[0])
+
+_zhurnal[:] = []
+n.enqueue(dict(_post), "Тарас Григорович")
+_cherga = [l for l in _zhurnal if l.startswith("у чергу")]
+check("постановка в чергу теж пишеться", len(_cherga) == 1,
+      _cherga[0] if _cherga else "у журналі порожньо")
+with n.db() as c:
+    c.execute("DELETE FROM queue")
+n.log.removeHandler(_h)
 
 _calls[:] = []
 n.check_edits("tgp_news", [dict(_post, text=TEXT_OLD)], "Тарас Григорович")

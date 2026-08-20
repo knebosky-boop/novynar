@@ -341,10 +341,8 @@ def release_ready(force=False):
                 "link": best["link"], "id": 0}
         if config.MODE == "digest" or in_quiet_hours():
             enqueue(post, best["title"])
-            log.info("у чергу: %s", best["link"])
         else:
             broadcast(post, best["title"])
-            log.info("надіслано: %s", best["link"])
         remember(best["channel"], best["text"])
         sent += 1
     return sent
@@ -1230,6 +1228,9 @@ def broadcast(post, title):
         send_post(p["user_id"], post, title)
         time.sleep(config.SEND_DELAY)
     bump_unread()
+    # Пишемо тут, а не в місцях виклику: інакше в журналі видно самі відсіви,
+    # а підтверджень доставки нема жодного.
+    log.info("надіслано (%s чит.): %s — %s", len(people), post["channel"], post["link"])
     return True
 
 
@@ -1247,6 +1248,7 @@ def enqueue(post, title):
                   "VALUES (?,?,?,?,?,?)",
                   (post["channel"], title, post["link"],
                    (post["text"] or "")[:1200], post["photo"] or "", int(time.time())))
+    log.info("у чергу: %s — %s", post["channel"], post["link"])
 
 
 def flush_queue(reason=""):
