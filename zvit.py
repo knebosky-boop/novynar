@@ -202,3 +202,30 @@ for zbig, a, b, _ in pary:
               % (zbig * 100, (b["ts"] - a["ts"]) // 60))
         print("     A (%s): %s" % (a["channel"], " ".join((a["body"] or "").split())[:105]))
         print("     B (%s): %s" % (b["channel"], " ".join((b["body"] or "").split())[:105]))
+
+zaholovok("МІЖ ЯКИМИ КАНАЛАМИ НАЙБІЛЬШЕ ПОВТОРІВ")
+akt = {r["channel"] for r in c.execute("SELECT channel FROM sources WHERE active = 1")}
+para_kanal = collections.Counter()
+zhyvi = 0
+for zbig, a, b, _ in pary:
+    kl = tuple(sorted((a["channel"], b["channel"])))
+    para_kanal[kl] += 1
+    if a["channel"] in akt and b["channel"] in akt:
+        zhyvi += 1
+print("  усього пар: %s, з них між ЖИВИМИ каналами: %s "
+      "(решта — з вимкненим «Суспільне»)" % (len(pary), zhyvi))
+print()
+for (x, y), k in para_kanal.most_common(12):
+    poznaka = "" if x in akt and y in akt else "   (канал вимкнено)"
+    print("  %-24s × %-24s %2d%s" % (x, y, k, poznaka))
+print()
+skilky = collections.Counter()
+for zbig, a, b, _ in pary:
+    if a["channel"] in akt and b["channel"] in akt:
+        skilky[a["channel"]] += 1
+        skilky[b["channel"]] += 1
+print("  скільки разів канал бере участь у повторі:")
+for ch, k in skilky.most_common():
+    vsyoho = c.execute("SELECT COUNT(*) k FROM sent WHERE channel = ? AND ts > ?",
+                       (ch, teper - 72 * 3600)).fetchone()["k"]
+    print("     %-24s %2d повторів із %s новин" % (ch, k, vsyoho))
