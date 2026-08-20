@@ -979,6 +979,78 @@ n.config.EDIT_NOTICE = _notice_was
 check("інші теги при тих самих словах — не правка",
       n.text_hash("<b>Суд</b> ухвалив рішення") == n.text_hash("<i>Суд</i> ухвалив рішення"))
 
+block("Тихі правки: крайні випадки")
+
+# Telegram дає боту правити свої повідомлення 48 годин. Далі editMessageText
+# повертає помилку — і читач лишається зі старою редакцією. Перевіряємо,
+# що мовчазний режим у цьому разі саме мовчить, а гучний шле новину заново.
+def _refusing_api(method, **kw):
+    if method.startswith("edit"):
+        _calls.append((method, kw))
+        return None
+    return _fake_api(method, **kw)
+
+def _rebuild(post_dict, readers=(1, 2)):
+    fresh_db()
+    with n.db() as c:
+        c.execute("INSERT INTO people VALUES (1,'kate',1,1)")
+        if 2 in readers:
+            c.execute("INSERT INTO people VALUES (2,'druh',0,1)")
+    for uid in readers:
+        n.send_post(uid, dict(post_dict), "Тарас Григорович")
+    _calls[:] = []
+
+_notice_keep = getattr(n.config, "EDIT_NOTICE", True)
+
+_rebuild(_post)
+n.config.EDIT_NOTICE = False
+n.api = _refusing_api
+n.check_edits("tgp_news", [dict(_post, text=TEXT_NEW)], "Тарас Григорович")
+n.api = _fake_api
+check("правку в старому пості пробуємо внести",
+      [1 for m, _ in _calls if m.startswith("edit")])
+check("Telegram відмовив — мовчки лишаємо стару редакцію",
+      not [1 for m, _ in _calls if m == "sendMessage"],
+      "надіслано: %s" % len([1 for m, _ in _calls if m == "sendMessage"]))
+
+_rebuild(_post, readers=(1,))
+n.config.EDIT_NOTICE = True
+n.api = _refusing_api
+n.check_edits("tgp_news", [dict(_post, text=TEXT_NEW)], "Тарас Григорович")
+n.api = _fake_api
+check("з EDIT_NOTICE відмова Telegram → новина заново з позначкою",
+      any("ВИПРАВЛЕНО" in kw.get("text", "") for m, kw in _calls if m == "sendMessage"))
+n.config.EDIT_NOTICE = False
+
+# WATCH_EDITS вимикає стеження цілком — ні правок, ні записок
+_rebuild(_post, readers=(1,))
+_watch_keep = n.config.WATCH_EDITS
+n.config.WATCH_EDITS = False
+n.check_edits("tgp_news", [dict(_post, text=TEXT_NEW)], "Тарас Григорович")
+check("WATCH_EDITS = False — жодного руху", not _calls, "викликів: %s" % len(_calls))
+n.config.WATCH_EDITS = _watch_keep
+
+# Якщо в config немає EDIT_NOTICE (старий файл) — поводимось як до змін
+_rebuild(_post, readers=(1,))
+del n.config.EDIT_NOTICE
+n.check_edits("tgp_news", [dict(_post, text=TEXT_NEW)], "Тарас Григорович")
+check("config без EDIT_NOTICE — стара гучна поведінка",
+      any("виправив" in kw.get("text", "") for m, kw in _calls if m == "sendMessage"))
+n.config.EDIT_NOTICE = _notice_keep
+
+# Мовчимо, але позначку в базі ставимо — інакше кожен обхід смикав би правку
+_rebuild(_post, readers=(1,))
+n.config.EDIT_NOTICE = False
+n.check_edits("tgp_news", [dict(_post, text=TEXT_NEW)], "Тарас Григорович")
+with n.db() as c:
+    _row = c.execute("SELECT hash, body FROM sent WHERE post_id = 77").fetchone()
+check("хеш і текст у базі оновлено навіть мовчки",
+      _row["hash"] == n.text_hash(TEXT_NEW) and "ПРАВОМІРНИМ" in _row["body"])
+_calls[:] = []
+n.check_edits("tgp_news", [dict(_post, text=TEXT_NEW)], "Тарас Григорович")
+check("вдруге ту саму правку не смикаємо", not _calls, "викликів: %s" % len(_calls))
+n.config.EDIT_NOTICE = _notice_keep
+
 n.api, n.send_media, n.time.sleep = _e_api, _e_media, _e_sleep
 
 block("Пост-відповідь: беремо власний текст, а не цитату")
