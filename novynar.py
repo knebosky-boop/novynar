@@ -460,16 +460,99 @@ def off_topic(low, channel):
     return hit
 
 
+def visible(text):
+    """Текст без розмітки, але з переносами рядків і пунктуацією.
+
+    Потрібен саме такий: у сирому HTML сидять href-посилання, а в них — цифри
+    (`t.me/c/1234567890123456`, id вкладень). Візерунок номера картки бачив у
+    них картку і викидав звичайну новину — так 21.08.2026 зник пост
+    chorleb/466 про Хартію та Єрмака, де жодних грошей не було."""
+    return html_mod.unescape(re.sub(r"<[^>]+>", " ", text or ""))
+
+
 def is_fundraising(text):
     """Прохання грошей: збір на канал, номер картки, банка, PayPal.
 
     Стоп-слова ловлять лише точну підстроку, а прохання пишуть як завгодно —
     тому тут візерунки. Повертає сам візерунок, що спрацював, або None."""
-    low = (text or "").lower()
+    low = visible(text).lower()
     for pat in getattr(config, "MONEY_PATTERNS", []):
         if re.search(pat, low, re.IGNORECASE):
             return pat
     return None
+
+
+# Канали ховають реквізити омографами: у Звіздця «РayPal» написано кириличною
+# «Р», і підстрокою "paypal" воно не знаходиться. Зводимо до латиниці.
+HOMOGLYPHS = str.maketrans("аᅠвгдеєзіїкмнорстухАВГДЕЄЗІЇКМНОРСТУХ",
+                           "a bcdeeзiikmhopctyxABCDEE3IIKMHOPCTYX")
+
+
+def latinize(s):
+    return (s or "").translate(HOMOGLYPHS)
+
+
+def footer_mark(line):
+    """Чи є рядок сам по собі донатним підвалом (банка, PayPal, «Ціль: 320 000»)."""
+    low = (line or "").lower()
+    lat = latinize(low)
+    return next((w for w in getattr(config, "DONATION_FOOTER_MARKS", [])
+                 if w in low or w in lat), None)
+
+
+def leadin_mark(line):
+    """Чи схожий рядок на підводку до реквізитів («не только лайком, но и финансово»).
+
+    Довгий абзац підводкою НЕ вважаємо: у тексті про економіку «фінансов» і
+    «гривень» — звичайні слова, і обрізка починала їсти саму новину."""
+    low = (line or "").lower()
+    if len(plain(line).strip()) > getattr(config, "DONATION_LEADIN_MAX_LINE", 220):
+        return False
+    return any(w in low for w in getattr(config, "DONATION_LEADIN", []))
+
+
+def cut_donation(text):
+    """Відрізає прохання грошей, приписане в кінці новини.
+
+    Повертає сам текст, якщо різати нічого або якщо збір і Є змістом поста:
+    тоді хай його ріже passes_filters цілком. Тіло після обрізки все одно
+    проходить фільтри — і якщо в ньому лишились ознаки збору, пост не піде."""
+    if not text:
+        return text
+    lines = text.split("\n")
+    cut = next((i for i, ln in enumerate(lines)
+                if ln.strip() and (is_fundraising(ln) or footer_mark(ln))), None)
+    if not cut:                      # None або 0 — підвалу немає, або він на початку
+        return text
+    # Підводку до реквізитів теж прибираємо: вона частина підвалу, а не новини.
+    def back(i):
+        """Індекс попереднього НЕпорожнього рядка (порожні між абзацами не рахуємо)."""
+        i -= 1
+        while i >= 0 and not lines[i].strip():
+            i -= 1
+        return i
+
+    step = 0
+    while cut > 0 and step < getattr(config, "DONATION_LEADIN_MAX", 6):
+        j = back(cut)
+        if j < 0:
+            break
+        if not leadin_mark(lines[j]):
+            # Короткий заголовок підвалу («Уважаемые читатели!», «Еще раз
+            # подчеркиваю») лексики не має — заглядаємо за нього.
+            k = back(j)
+            if not (len(plain(lines[j]).strip()) <= 40 and k >= 0
+                    and leadin_mark(lines[k])):
+                break
+        cut = j
+        step += 1
+    head = "\n".join(lines[:cut]).rstrip()
+    body, whole = len(plain(head).strip()), len(plain(text).strip())
+    if body < getattr(config, "DONATION_BODY_MIN", 400):
+        return text                  # новини під підвалом немає
+    if whole and body < getattr(config, "DONATION_BODY_SHARE", 0.4) * whole:
+        return text                  # підвал більший за саму новину
+    return close_tags(head)
 
 
 def passes_filters(text, has_media, channel=None):
@@ -576,7 +659,7 @@ def fetch_channel(channel):
             continue
         pid = int(m.group(1))
 
-        text = clean_html(message_text_node(box))
+        text = cut_donation(clean_html(message_text_node(box)))
 
         photo = None
         ph = box.select_one(".tgme_widget_message_photo_wrap")
