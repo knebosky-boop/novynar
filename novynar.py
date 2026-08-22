@@ -183,8 +183,15 @@ def word_in(low, key):
 
 
 def starts_word(low, stem):
-    """Шукаємо основу з початку слова: «гази» не сховається в «магазині»."""
-    return re.search(r"(?<![\w'’-])" + re.escape(stem), low) is not None
+    """Шукаємо основу з початку слова: «гази» не сховається в «магазині».
+
+    Якщо фраза кінчається коротким службовим словом («збір на»), межу ставимо
+    і справа. Інакше «збір наборів даних для навчання ШІ» читається як збір
+    грошей — так 22.08.2026 зникла новина serhii_flash/7538 про гербери.
+    Для основи («партнерськ») межі справа бути не може: за нею йде закінчення."""
+    parts = (stem or "").split()
+    tail = r"(?![\w'’-])" if parts and len(parts[-1]) <= 2 else ""
+    return re.search(r"(?<![\w'’-])" + re.escape(stem) + tail, low) is not None
 
 
 NOISE_WORDS = {
@@ -460,6 +467,20 @@ def off_topic(low, channel):
     return hit
 
 
+# Емодзі в тексті ліплять слова докупи: «⚠️УВАГА!Залишилося зібрати» після
+# зняття розмітки стає «увагазалишилося зібрати», і стоп-слово «залишилося
+# зібрати» вже не спрацьовує (22.08.2026 так проліз збір zvizdecmanhustu/3418).
+# Для ПОШУКУ міняємо їх на пробіл; текст, який іде читачеві, лишається цілим.
+EMOJI_RE = re.compile(
+    "[\u2190-\u2BFF\u2E00-\u2E7F\uFE0F\u200d\u3030"
+    "\U0001F000-\U0001FAFF\U0001F1E6-\U0001F1FF]+")
+
+
+def flat(text):
+    """Текст для пошуку: емодзі замінені пробілом, слова не злипаються."""
+    return EMOJI_RE.sub(" ", text or "")
+
+
 def visible(text):
     """Текст без розмітки, але з переносами рядків і пунктуацією.
 
@@ -467,7 +488,7 @@ def visible(text):
     (`t.me/c/1234567890123456`, id вкладень). Візерунок номера картки бачив у
     них картку і викидав звичайну новину — так 21.08.2026 зник пост
     chorleb/466 про Хартію та Єрмака, де жодних грошей не було."""
-    return html_mod.unescape(re.sub(r"<[^>]+>", " ", text or ""))
+    return html_mod.unescape(re.sub(r"<[^>]+>", " ", flat(text)))
 
 
 def is_fundraising(text):
@@ -564,7 +585,7 @@ def passes_filters(text, has_media, channel=None):
     toll = is_daily_toll(text)
     if toll:
         return False, "щоденна зведена статистика («%s»)" % toll
-    low = (text or "").lower()
+    low = flat(text).lower()
     theme = off_topic(low, channel)
     if theme:
         return False, "не наша тема («%s»)" % theme
@@ -577,8 +598,14 @@ def passes_filters(text, has_media, channel=None):
     money = is_fundraising(text)
     if money:
         return False, "збір грошей"
+    # Звіряємо і сирий текст, і текст без розмітки. Сирий потрібен, бо
+    # «send.monobank» сидить у href; текст без розмітки — бо фразу рве тег:
+    # «УВАГА,ЗАЛИШИЛОСЯ</b> <b>ЗІБРАТИ 10 000 ГРН» стоп-словом «залишилося
+    # зібрати» не ловилось узагалі (22.08.2026, збір zvizdecmanhustu/3418).
+    vis = visible(text).lower()
     for w in config.STOP_WORDS:
-        if starts_word(low, w.lower()):     # з початку слова, без обрізання основи
+        wl = w.lower()
+        if starts_word(low, wl) or starts_word(vis, wl):
             return False, "стоп-слово «%s»" % w
     if config.KEYWORDS and not any(word_in(low, k) for k in config.KEYWORDS):
         return False, "немає ключових слів"
