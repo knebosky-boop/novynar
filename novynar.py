@@ -576,6 +576,40 @@ def cut_donation(text):
     return close_tags(head)
 
 
+def cut_signature(text, channel=""):
+    """Відрізає службовий підпис каналу в хвості («Підписатися на канал»).
+
+    Дивиться лише короткі хвостові рядки: у самій новині «Зеленський підписав
+    закон» стоїть у тексті, а не окремим рядком на 30 знаків. Ім'я каналу
+    рядком (у Левіна це просто «yigal_levin») — теж підпис."""
+    if not text:
+        return text
+    marks = getattr(config, "SIGNATURE_MARKS", [])
+    max_line = getattr(config, "SIGNATURE_MAX_LINE", 120)
+    lines = text.split("\n")
+    changed = False
+    for _ in range(getattr(config, "SIGNATURE_MAX_LINES", 3)):
+        i = len(lines) - 1
+        while i >= 0 and not lines[i].strip():
+            i -= 1
+        if i <= 0:                      # єдиний рядок не чіпаємо
+            break
+        bare = plain(lines[i]).strip()
+        low = bare.lower()
+        if len(bare) > max_line:
+            break
+        hit = any(w in low for w in marks) or \
+            (channel and low.strip("@ ").replace(" ", "") == channel.lower())
+        if not hit:
+            break
+        head = "\n".join(lines[:i]).rstrip()
+        if len(plain(head).strip()) < getattr(config, "SIGNATURE_MIN_BODY", 100):
+            break                       # від новини нічого не лишиться
+        lines = head.split("\n")
+        changed = True
+    return close_tags("\n".join(lines).rstrip()) if changed else text
+
+
 def passes_filters(text, has_media, channel=None):
     if is_service(text):
         return False, "службова позначка"
@@ -686,7 +720,8 @@ def fetch_channel(channel):
             continue
         pid = int(m.group(1))
 
-        text = cut_donation(clean_html(message_text_node(box)))
+        text = cut_signature(cut_donation(clean_html(message_text_node(box))),
+                             channel)
 
         photo = None
         ph = box.select_one(".tgme_widget_message_photo_wrap")
