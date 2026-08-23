@@ -718,6 +718,9 @@ class _T(_real_dt):
     def now(cls, tz=None): return _real_dt(2026, 8, 18, cls.H, cls.M)
 n.datetime = _T
 config.QUIET_HOURS = (23, 8)
+_real_reminders = config.REMINDER_TIMES
+check("у бойовому конфізі нагадування вимкнені", _real_reminders == [],
+      str(_real_reminders))
 config.REMINDER_TIMES = ["08:00", "20:00"]
 
 _T.H, _T.M = 7, 30; n.maybe_remind()
@@ -750,7 +753,7 @@ config.REMINDER_TIMES = []; _T.H, _T.M = 12, 0; _sent[:] = []; n.maybe_remind()
 check("порожній список — нагадувань немає", not _sent)
 n.datetime = _real_dt
 n.api = _real_api
-config.REMINDER_TIMES = ["08:00", "20:00"]
+config.REMINDER_TIMES = _real_reminders
 
 block("Імена і відмінювання")
 check("друга звати за іменем", n.person_name(129576564, "") == "Микола")
