@@ -1546,7 +1546,14 @@ def round_trip():
 def maybe_remind():
     """Пару разів на день — дзенькнути читачам, що є що почитати."""
     times = getattr(config, "REMINDER_TIMES", [])
-    if not times or in_quiet_hours():
+    if not times:
+        # Нагадування вимкнені — тримаємо лічильник на нулі. Інакше він росте
+        # без кінця, і в день, коли години впишуть назад, першим повідомленням
+        # прилетить «назбиралося 4000 новин» за весь час мовчання.
+        if int(get_state("unread", 0) or 0):
+            set_state("unread", 0)
+        return
+    if in_quiet_hours():
         return
     now = datetime.now()
     today = now.strftime("%Y-%m-%d")

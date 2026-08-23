@@ -751,6 +751,13 @@ n.maybe_remind()
 check("вночі не турбує", not _sent)
 config.REMINDER_TIMES = []; _T.H, _T.M = 12, 0; _sent[:] = []; n.maybe_remind()
 check("порожній список — нагадувань немає", not _sent)
+for _ in range(9):
+    n.bump_unread()
+n.maybe_remind()
+check("з вимкненими нагадуваннями лічильник не росте роками",
+      int(n.get_state("unread", 0) or 0) == 0,
+      "unread = %s" % n.get_state("unread", 0))
+check("і при цьому нічого не шлеться", not _sent)
 n.datetime = _real_dt
 n.api = _real_api
 config.REMINDER_TIMES = _real_reminders
