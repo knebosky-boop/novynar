@@ -381,6 +381,20 @@ def release_ready(force=False):
     return sent
 
 
+def is_fragment(text):
+    """Обривок, а не текст: ні крапки в кінці речення, ні посилання.
+
+    Саме так виглядає сигналка — «Шахед або Бандероль на Вишгород». Новина й
+    аналітика пишуться реченнями, а короткий коментар до посилання — з
+    посиланням; ні те, ні те обривком не є."""
+    bare = visible(text or "").strip()
+    if not bare:
+        return False
+    if re.search(r"https?://|t\.me/", text or ""):
+        return False
+    return not re.search(r"[.!?…]", bare)
+
+
 def is_alert(text):
     """Сигналізація замість новини: тривоги, дорозвідка, атака в моменті.
 
@@ -397,6 +411,12 @@ def is_alert(text):
 
     soft = [m for m in getattr(config, "LIVE_ATTACK_MARKERS", [])
             if starts_word(low, m)]
+    # Сама назва зброї — сигналка лише в обривку без речення: «Новодонецьке -
+    # Шахеди та Гербери». Аналітика про ту саму зброю пише реченнями з
+    # крапками, тому назву рахуємо тільки там, де речення немає взагалі.
+    if not soft and is_fragment(text):
+        soft = [m for m in getattr(config, "LIVE_ATTACK_NAMES", [])
+                if starts_word(low, m)]
     if soft and len(low) <= getattr(config, "LIVE_ATTACK_MAX_LEN", 400):
         # «збили 42 шахеди минулої ночі» — це підсумок, а не сигнал тривоги
         if any(starts_word(low, w) for w in getattr(config, "NEWS_MARKERS", [])):
@@ -498,6 +518,19 @@ def is_fundraising(text):
     тому тут візерунки. Повертає сам візерунок, що спрацював, або None."""
     low = visible(text).lower()
     for pat in getattr(config, "MONEY_PATTERNS", []):
+        if re.search(pat, low, re.IGNORECASE):
+            return pat
+    return None
+
+
+def is_channel_promo(text):
+    """Реклама чужого каналу: «рекомендую канал», «раджу підписатися».
+
+    Не новина, а взаємопіар. Повертає візерунок, що спрацював, або None.
+    Промо, приписане хвостом під справжньою новиною, сюди не доходить —
+    його раніше знімає cut_signature()."""
+    low = visible(text).lower()
+    for pat in getattr(config, "CHANNEL_PROMO_PATTERNS", []):
         if re.search(pat, low, re.IGNORECASE):
             return pat
     return None
@@ -632,6 +665,9 @@ def passes_filters(text, has_media, channel=None):
     money = is_fundraising(text)
     if money:
         return False, "збір грошей"
+    promo = is_channel_promo(text)
+    if promo:
+        return False, "реклама чужого каналу"
     # Звіряємо і сирий текст, і текст без розмітки. Сирий потрібен, бо
     # «send.monobank» сидить у href; текст без розмітки — бо фразу рве тег:
     # «УВАГА,ЗАЛИШИЛОСЯ</b> <b>ЗІБРАТИ 10 000 ГРН» стоп-словом «залишилося
