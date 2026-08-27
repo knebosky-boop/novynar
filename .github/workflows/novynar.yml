@@ -28,10 +28,10 @@ jobs:
             echo "go=yes" >> $GITHUB_OUTPUT
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         if: steps.guard.outputs.go == 'yes'
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         if: steps.guard.outputs.go == 'yes'
         with:
           python-version: "3.11"
@@ -43,7 +43,7 @@ jobs:
 
       - name: Згадати, на чому спинились
         if: steps.guard.outputs.go == 'yes'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: novynar.db
           key: novynar-db-${{ github.run_id }}
@@ -60,7 +60,7 @@ jobs:
 
       - name: Запам'ятати
         if: always() && steps.guard.outputs.go == 'yes'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: novynar.db
           key: novynar-db-${{ github.run_id }}
