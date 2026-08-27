@@ -821,8 +821,8 @@ class _T(_real_dt):
 n.datetime = _T
 config.QUIET_HOURS = (23, 8)
 _real_reminders = config.REMINDER_TIMES
-check("у бойовому конфізі нагадування вимкнені", _real_reminders == [],
-      str(_real_reminders))
+check("у бойовому конфізі нагадування о 08:00 і 20:00",
+      _real_reminders == ["08:00", "20:00"], str(_real_reminders))
 config.REMINDER_TIMES = ["08:00", "20:00"]
 
 _T.H, _T.M = 7, 30; n.maybe_remind()

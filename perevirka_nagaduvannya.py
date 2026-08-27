@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-"""Живий прогон на БОЙОВОМУ config.py: чи мовчить бот о 08:00 і 20:00
-і чи не поламалась при цьому звичайна доставка новин."""
+"""Живий прогон на БОЙОВОМУ config.py: чи шле бот нагадування о 08:00 і 20:00
+(повернуто 27.08.2026), чи мовчить решту доби і чи не поламалась доставка новин."""
 import os, sys, datetime as dt
 sys.path.insert(0, os.path.expanduser("~/.claude/Новинар"))
 os.chdir(os.path.expanduser("~/.claude/Новинар"))
@@ -44,6 +44,8 @@ def check(name, cond, note=""):
 
 print("Бойовий конфіг: REMINDER_TIMES = %r, QUIET_HOURS = %r"
       % (config.REMINDER_TIMES, config.QUIET_HOURS))
+check("у бойовому конфізі години 08:00 і 20:00 на місці",
+      config.REMINDER_TIMES == ["08:00", "20:00"], str(config.REMINDER_TIMES))
 
 _real_dt = dt.datetime
 class _T(_real_dt):
@@ -52,44 +54,87 @@ class _T(_real_dt):
     def now(cls, tz=None): return _real_dt(2026, 8, 24, cls.H, cls.M)
 n.datetime = _T
 
-# 30 непрочитаних новин у скарбничці — тобто привід нагадати є з запасом
+def nagady():
+    return [s for s in SENT if s[0] == "sendMessage" and (
+        "почитати" in s[2] or "Доброго ранку" in s[2]
+        or "Гарного вечора" in s[2] or "азбиралося" in s[2])]
+
+# 30 непрочитаних новин у скарбничці — привід нагадати є з запасом
 for _ in range(30):
     n.bump_unread()
 check("новини накопичились (є привід нагадати)",
       int(n.get_state("unread", 0)) == 30, "unread = %s" % n.get_state("unread", 0))
 
-print("\n═══ Кожна хвилина вікна нагадувань — з бойовим конфігом ═══")
-tyxo = True
-for hh in (7, 8, 9, 19, 20, 21):
-    for mm in (0, 1, 5, 12, 19, 20, 30, 45, 59):
-        _T.H, _T.M = hh, mm
-        SENT[:] = []
-        n.maybe_remind()
-        if SENT:
-            tyxo = False
-            print("     ✗ %02d:%02d → надіслано %s" % (hh, mm, SENT))
-check("за 54 хвилини навколо 08:00 і 20:00 — жодного повідомлення", tyxo,
-      "перебрано 7:00–7:59, 8:00–8:59, 9:xx, 19:xx, 20:xx, 21:xx")
+print("\n═══ Ранкове нагадування о 08:00 ═══")
+_T.H, _T.M = 7, 59
+SENT[:] = []
+n.maybe_remind()
+check("о 07:59 ще мовчить", not SENT)
 
-# доба поспіль, кожні 10 хвилин — чи не вилізе нагадування деінде
+_T.H, _T.M = 8, 3
+SENT[:] = []
+n.maybe_remind()
+nag = nagady()
+check("о 08:03 нагадування пішло", len(nag) == 1,
+      nag[0][2][:52].replace("\n", " ") if nag else "нічого")
+check("текст ранковий і рахунок точний",
+      nag and "Доброго ранку" in nag[0][2] and "30 новин" in nag[0][2])
+check("іде читачеві, а не власниці",
+      nag and nag[0][1] == 129576564 and all(s[1] != 555 for s in nag))
+check("нагадування зі звуком (на відміну від новин)",
+      nag and nag[0][3] is False, "disable_notification = %s" % (nag[0][3] if nag else "?"))
+check("лічильник обнулився", int(n.get_state("unread", 0)) == 0,
+      "unread = %s" % n.get_state("unread", 0))
+check("позначка 'нагадав сьогодні' стала в базі",
+      bool(n.get_state("remind:2026-08-24:08:00")))
+
+for _ in range(5):
+    n.bump_unread()
+_T.H, _T.M = 8, 10
+SENT[:] = []
+n.maybe_remind()
+check("вдруге того ж ранку не турбує", not nagady())
+
+print("\n═══ Вечірнє нагадування о 20:00 ═══")
+_T.H, _T.M = 20, 5
+SENT[:] = []
+n.maybe_remind()
+nag = nagady()
+check("о 20:05 нагадування пішло", len(nag) == 1,
+      nag[0][2][:52].replace("\n", " ") if nag else "нічого")
+check("текст вечірній і рахує від ранку, не за весь час",
+      nag and "Гарного вечора" in nag[0][2] and "5 новин" in nag[0][2])
+
+print("\n═══ Поза вікнами — тиша, порожня скарбничка — не турбує ═══")
+# доба по 10 хвилин; дозволені лише вікна 20 хв після 08:00 і 20:00,
+# але позначки за сьогодні вже стоять — отже має бути суцільна тиша
 tyxo_doba = True
 for hh in range(24):
     for mm in range(0, 60, 10):
         _T.H, _T.M = hh, mm
         SENT[:] = []
         n.maybe_remind()
-        if SENT:
+        if nagady():
             tyxo_doba = False
             print("     ✗ %02d:%02d → %s" % (hh, mm, SENT[0][2][:60]))
-check("ціла доба по 10 хвилин — тиша", tyxo_doba, "144 моменти часу")
+check("решта доби по 10 хвилин — тиша", tyxo_doba, "144 моменти часу")
 
-check("лічильник непрочитаних тримається на нулі, а не росте роками",
-      int(n.get_state("unread", 0)) == 0, "unread = %s" % n.get_state("unread", 0))
-check("позначки 'нагадав сьогодні' в базі не з'явилось",
-      not n.get_state("remind:2026-08-24:08:00"))
+# наступний день, новин нуль — час настав, а турбувати нічим
+_T2 = _T
+class _T3(_real_dt):
+    H, M = 8, 3
+    @classmethod
+    def now(cls, tz=None): return _real_dt(2026, 8, 25, cls.H, cls.M)
+n.datetime = _T3
+SENT[:] = []
+n.maybe_remind()
+check("новин нема — час настав, але не турбує", not nagady())
+check("позначку при цьому не ставить (ще встигне у вікні)",
+      not n.get_state("remind:2026-08-25:08:00"))
+n.datetime = _T2
 
 print("\n═══ Чи не поламалась доставка самих новин ═══")
-_T.H, _T.M = 8, 5
+_T.H, _T.M = 12, 5
 SENT[:] = []
 n.broadcast({"text": "Перевірка доставки після правки",
              "link": "https://t.me/test/1", "channel": "test",
@@ -108,38 +153,39 @@ check("у новині немає слів нагадування",
       all("почитати новини" not in s[2] and "Доброго ранку" not in s[2]
           and "Гарного вечора" not in s[2] for s in novyny))
 
-print("\n═══ Повний прохід once() о 08:00 — що піде людям ═══")
-_T.H, _T.M = 8, 0
-SENT[:] = []
+print("\n═══ Повний прохід once() — нагадування вбудоване у зміну ═══")
+class _T4(_real_dt):
+    H, M = 20, 2
+    @classmethod
+    def now(cls, tz=None): return _real_dt(2026, 8, 25, cls.H, cls.M)
+n.datetime = _T4
+n.bump_unread()
 n.round_trip = lambda *a, **kw: None      # каналів не смикаємо, нас цікавить решта
-n.once()
-nagad = [s for s in SENT if s[0] == "sendMessage" and (
-    "почитати" in s[2] or "Доброго ранку" in s[2] or "Гарного вечора" in s[2]
-    or "Назбиралося" in s[2])]
-check("once() о 08:00 не шле нагадувань", not nagad,
-      "усього викликів API: %s" % len(SENT))
-
-_T.H, _T.M = 20, 0
 SENT[:] = []
 n.once()
-nagad = [s for s in SENT if s[0] == "sendMessage" and (
-    "почитати" in s[2] or "Гарного вечора" in s[2] or "Назбиралося" in s[2])]
-check("once() о 20:00 не шле нагадувань", not nagad,
+check("once() о 20:02 шле рівно одне нагадування", len(nagady()) == 1,
+      "усього викликів API: %s" % len(SENT))
+_T4.H, _T4.M = 12, 0
+SENT[:] = []
+n.once()
+check("once() серед дня нагадувань не шле", not nagady(),
       "усього викликів API: %s" % len(SENT))
 
-print("\n═══ Вимикач оборотний: вписав години — нагадування ожило ═══")
-config.REMINDER_TIMES = ["08:00", "20:00"]
+print("\n═══ Вимикач оборотний: порожній список — тиша і нуль ═══")
+config.REMINDER_TIMES = []
 for _ in range(4):
     n.bump_unread()
-_T.H, _T.M = 8, 3
+_T4.H, _T4.M = 8, 3
+class _T5(_real_dt):
+    @classmethod
+    def now(cls, tz=None): return _real_dt(2026, 8, 26, 8, 3)
+n.datetime = _T5
 SENT[:] = []
 n.maybe_remind()
-nag = [x for x in SENT if "Назбиралося" in x[2] or "назбиралося" in x[2]]
-check("з годинами в конфізі нагадування знову шлеться", len(nag) == 1,
-      nag[0][2][:52].replace("\n", " ") if nag else "нічого")
-check("і рахує від нуля, а не за весь час мовчання",
-      nag and "4 новини" in nag[0][2], "мало бути 4 новини")
-config.REMINDER_TIMES = []
+check("без годин у конфізі мовчить навіть о 08:03", not nagady())
+check("і лічильник тримає на нулі, а не копить",
+      int(n.get_state("unread", 0)) == 0, "unread = %s" % n.get_state("unread", 0))
+config.REMINDER_TIMES = ["08:00", "20:00"]
 
 print("\n%s ПІДСУМОК ЖИВОГО ПРОГОНУ: %s правильно, %s помилок\n"
       % ("✅" if not fail else "❌", ok, fail))
