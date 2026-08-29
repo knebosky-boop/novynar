@@ -523,6 +523,19 @@ def is_fundraising(text):
     return None
 
 
+def body_is_fundraising(text):
+    """Чи є тілом поста сам збір — після того, як із хвоста зняли реквізити.
+
+    Окремий, м'якший набір візерунків: він дивиться тільки на текст, під яким
+    щойно стояла банка чи PayPal, тому третя особа («збирають 1 700 000 ₴»)
+    тут не небезпечна. Повертає візерунок, що спрацював, або None."""
+    low = visible(text).lower()
+    for pat in getattr(config, "FUNDRAISING_BODY_PATTERNS", []):
+        if re.search(pat, low, re.IGNORECASE):
+            return pat
+    return None
+
+
 def is_channel_promo(text):
     """Реклама чужого каналу: «рекомендую канал», «раджу підписатися».
 
@@ -606,6 +619,8 @@ def cut_donation(text):
         return text                  # новини під підвалом немає
     if whole and body < getattr(config, "DONATION_BODY_SHARE", 0.4) * whole:
         return text                  # підвал більший за саму новину
+    if body_is_fundraising(head):
+        return text                  # тіло і Є збором — хай ріже passes_filters
     return close_tags(head)
 
 
