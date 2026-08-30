@@ -651,11 +651,41 @@ def cut_signature(text, channel=""):
         if not hit:
             break
         head = "\n".join(lines[:i]).rstrip()
-        if len(plain(head).strip()) < getattr(config, "SIGNATURE_MIN_BODY", 100):
-            break                       # від новини нічого не лишиться
+        # Тут стояв поріг SIGNATURE_MIN_BODY: якщо під підписом лишалось менше
+        # 100 знаків, підпис НЕ різався взагалі — і «Подписаться | Предложить
+        # новость» ішло читачеві (30.08.2026: 65 таких постів на корпусі 2431).
+        # Тепер ріжемо завжди, а чи лишилась новина — вирішує signature_only().
         lines = head.split("\n")
         changed = True
     return close_tags("\n".join(lines).rstrip()) if changed else text
+
+
+def signature_only(text, channel=""):
+    """Чи складається пост із самого лише підпису каналу.
+
+    Потрібна відтоді, як cut_signature() перестав берегти підпис під коротким
+    тілом. Пост «🌆 Подписаться | Предложить новость» і огризок «Добропілля»
+    з тим самим підвалом — не новина, навіть із картинкою. Якщо підписного
+    рядка в пості немає взагалі, функція мовчить: коротка новина з фото
+    («Вибух у Нікополі») має проходити, як і раніше.
+    """
+    marks = getattr(config, "SIGNATURE_MARKS", [])
+    max_line = getattr(config, "SIGNATURE_MAX_LINE", 120)
+    seen_sig, rest = False, []
+    for ln in (text or "").split("\n"):
+        bare = plain(ln).strip()
+        if not bare:
+            continue
+        low = bare.lower()
+        if len(bare) <= max_line and (
+                any(w in low for w in marks) or
+                (channel and low.strip("@ ").replace(" ", "") == channel.lower())):
+            seen_sig = True
+            continue
+        rest.append(bare)
+    if not seen_sig:
+        return False
+    return len(" ".join(rest).strip()) < getattr(config, "SIGNATURE_KEEP_MIN", 25)
 
 
 def passes_filters(text, has_media, channel=None):
@@ -683,6 +713,11 @@ def passes_filters(text, has_media, channel=None):
     promo = is_channel_promo(text)
     if promo:
         return False, "реклама чужого каналу"
+    # Після промо і зборів, а не перед ними: «Рекомендую канал колеги» — це
+    # реклама, і причину читач має бачити саме таку. Сюди доходить те, від чого
+    # після зняття підпису не лишилось новини взагалі.
+    if signature_only(text, channel or ""):
+        return False, "сам лише підпис каналу"
     # Звіряємо і сирий текст, і текст без розмітки. Сирий потрібен, бо
     # «send.monobank» сидить у href; текст без розмітки — бо фразу рве тег:
     # «УВАГА,ЗАЛИШИЛОСЯ</b> <b>ЗІБРАТИ 10 000 ГРН» стоп-словом «залишилося
