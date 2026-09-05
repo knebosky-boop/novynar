@@ -1112,12 +1112,13 @@ def open_stack(fragment):
     return stack
 
 
-def split_messages(title, body, link, first_limit, rest_limit=4096, max_parts=8):
+def split_messages(title, body, link, first_limit, rest_limit=4096, max_parts=8,
+                   force_header=False):
     """Ріжемо довгий пост на кілька повідомлень, не втрачаючи ані слова.
 
     Розрив може випасти всередину <b> чи <a> — тому на місці розрізу теги
     закриваємо, а на початку наступної частини відкриваємо знову."""
-    head = "📡 <b>%s</b>\n\n" % html_mod.escape(short_title(title))
+    head = channel_header(title, "\n\n", force=force_header)
     tail = '\n\n<a href="%s">↗ оригінал</a>' % link
     body = (body or "").strip()
     parts, rest, carry = [], body, ""
@@ -1167,6 +1168,16 @@ def split_messages(title, body, link, first_limit, rest_limit=4096, max_parts=8)
     return parts
 
 
+def channel_header(title, sep, force=False):
+    """Рядок «📡 Назва каналу» над новиною — або нічого.
+
+    05.09.2026, вказівка судді: назву каналу зверху не писати. Канал і так
+    видно з посилання «↗ оригінал» унизу. Вимикач — CHANNEL_HEADER у config."""
+    if not force and not getattr(config, "CHANNEL_HEADER", True):
+        return ""
+    return "📡 <b>%s</b>%s" % (html_mod.escape(short_title(title)), sep)
+
+
 def short_title(title):
     """Коротке ім'я каналу для заголовка.
 
@@ -1185,7 +1196,7 @@ def short_title(title):
 
 
 def build_text(title, body, link, limit):
-    head = "📡 <b>%s</b>" % html_mod.escape(short_title(title))
+    head = channel_header(title, "")
     tail = '\n\n<a href="%s">↗ оригінал</a>' % link
     body, was_cut = smart_cut(body, limit - len(head) - len(tail) - 40)
     if was_cut:
@@ -1345,8 +1356,11 @@ def push_edit(row, post, title):
             # На місці не вийшло (інша кількість частин або застаре
             # повідомлення) — шлемо виправлену новину окремо.
             # Мовчки (EDIT_NOTICE = False) сюди не заходимо взагалі.
+            # Позначка «ВИПРАВЛЕНО» — не назва каналу, її лишаємо і при
+            # вимкненому CHANNEL_HEADER: без неї читач не зрозуміє, що це.
             again = split_messages("✏️ ВИПРАВЛЕНО · " + short_title(title),
-                                   body, post["link"], first_limit=4096)
+                                   body, post["link"], first_limit=4096,
+                                   force_header=True)
             for j, chunk in enumerate(again):
                 if api("sendMessage", chat_id=uid, text=chunk, parse_mode="HTML",
                        disable_web_page_preview=True,

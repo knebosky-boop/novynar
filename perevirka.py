@@ -861,6 +861,23 @@ check("запис у оновлену схему працює",
       n.already_told("Новина про важливі події у Дніпрі та області сьогодні вранці") is not None)
 n.DB_PATH = _old_path
 
+block("Заголовок каналу над новиною: вимикач CHANNEL_HEADER")
+_hdr = getattr(config, "CHANNEL_HEADER", True)
+config.CHANNEL_HEADER = False
+_p = n.split_messages("Канал", "Текст новини без заголовка.", "https://t.me/x/1", 4096)
+check("вимкнено: назви каналу зверху немає", "📡" not in _p[0] and "Канал" not in _p[0],
+      _p[0].split("\n")[0][:40])
+check("вимкнено: текст і посилання на місці",
+      _p[0].startswith("Текст новини") and "↗ оригінал" in _p[0])
+_p = n.split_messages("Канал", ("Довгий абзац новини. " * 300).strip(), "https://t.me/x/1", 1024)
+check("вимкнено: довгий пост ріжеться і кожна частина в межах",
+      len(_p) > 1 and all(len(x) <= (1024 if not i else 4096) for i, x in enumerate(_p)))
+config.CHANNEL_HEADER = True
+_p = n.split_messages("Канал", "Текст новини із заголовком.", "https://t.me/x/1", 4096)
+check("увімкнено: «📡 Канал» першим рядком", _p[0].startswith("📡 <b>Канал</b>\n\n"))
+check("у бойовому конфізі вимкнено", _hdr is False)
+config.CHANNEL_HEADER = _hdr
+
 block("Довгі пости: повний текст без втрат")
 plain = lambda s: re.sub(r"\s+", "", re.sub(r"<[^>]+>", "", s))
 body = ("<b>Заголовок новини</b>\n\n" +
