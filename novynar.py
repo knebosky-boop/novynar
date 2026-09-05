@@ -914,6 +914,12 @@ def api(method, **params):
             if j.get("ok"):
                 return j["result"]
             desc = j.get("description", "")
+            if "message is not modified" in desc.lower():
+                # Telegram каже: текст і так такий. Для нас це успіх, а не
+                # збій: push_edit() править частини по черзі, і None тут рвав
+                # цикл — друга частина довгого поста лишалась старою назавжди
+                # (05.09.2026: 5 таких правок за три доби).
+                return {"not_modified": True}
             if j.get("error_code") in (400, 403) and params.get("chat_id"):
                 low = desc.lower()
                 if ("blocked" in low or "chat not found" in low
@@ -1898,6 +1904,11 @@ def handle_owner_command(chat, cmd, arg):
         reply(chat, "Впустив <b>@%s</b>. Хай тисне Start у бота." % html_mod.escape(who))
     elif cmd == "/deny":
         who = arg.lstrip("@").strip().lower()
+        if not who:
+            # Без цього порожнє who вимикало всіх із порожнім юзернеймом —
+            # тобто кожного, кого підняв bootstrap_people() (05.09.2026).
+            reply(chat, "Напишіть так: <code>/deny @юзернейм</code>")
+            return
         with db() as c:
             c.execute("DELETE FROM allowed WHERE username = ?", (who,))
             c.execute("UPDATE people SET active = 0 WHERE lower(username) = ? "
@@ -1962,7 +1973,9 @@ def bootstrap_people():
             c.execute("INSERT OR IGNORE INTO people "
                       "(user_id, username, is_owner, active) VALUES (?,'',1,1)",
                       (config.OWNER_ID,))
-            c.execute("UPDATE people SET is_owner = 1, active = 1 WHERE user_id = ?",
+            # Лише is_owner, без active = 1: інакше /stop власниці скасовувався
+            # на старті кожної зміни, тобто за ≤ 18 хвилин (05.09.2026).
+            c.execute("UPDATE people SET is_owner = 1 WHERE user_id = ?",
                       (config.OWNER_ID,))
         for uid in getattr(config, "READERS", []):
             c.execute("INSERT OR IGNORE INTO people "

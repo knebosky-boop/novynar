@@ -5,6 +5,7 @@
 """
 import os, re, sys, time
 import config, novynar as n
+_api_original = n.api          # справжній api() — далі його багато разів підміняють
 _SOURCES_REAL = list(config.SOURCES)   # блок про вимкнення каналів його підміняє
 
 n.DB_PATH = "/tmp/nv_perevirka.db"
@@ -1125,6 +1126,26 @@ check("/deny відрізає", "Відрізав" in cmd("/deny @petro") and no
 check("чужому команди не даються", cmd("/add @x", uid=99, uname="hacker") == "" or
       "власниц" in cmd("/add @x", uid=99, uname="hacker"))
 check("/stop вимикає читача", "Зупинив" in cmd("/stop"))
+with n.db() as c:
+    c.execute("INSERT OR REPLACE INTO people VALUES (5,'',0,1)")   # піднятий з READERS
+_ans = cmd("/deny")
+check("/deny без аргументу нікого не чіпає",
+      5 in [p["user_id"] for p in n.readers()] and "Напишіть так" in _ans, _ans[:40])
+_ans = cmd("/deny @")
+check("/deny @ — те саме", 5 in [p["user_id"] for p in n.readers()] and "Напишіть так" in _ans)
+
+block("Старт зміни не скасовує /stop власниці")
+fresh_db()
+_own_keep = config.OWNER_ID
+config.OWNER_ID = 1
+n.bootstrap_people()
+check("власницю піднято активною", 1 in [p["user_id"] for p in n.readers()])
+with n.db() as c:
+    c.execute("UPDATE people SET active = 0 WHERE user_id = 1")      # її /stop
+n.bootstrap_people()
+check("після нової зміни /stop власниці тримається", 1 not in [p["user_id"] for p in n.readers()])
+check("а власницею вона лишається", n.owner() and n.owner()["user_id"] == 1)
+config.OWNER_ID = _own_keep
 
 block("Особистий лист від власниці")
 fresh_db()
@@ -1559,6 +1580,40 @@ _calls[:] = []
 n.check_edits("tgp_news", [dict(_post, text=TEXT_NEW)], "Тарас Григорович")
 check("вдруге ту саму правку не смикаємо", not _calls, "викликів: %s" % len(_calls))
 n.config.EDIT_NOTICE = _notice_keep
+
+# Правка лише в ДРУГІЙ частині довгого поста: Telegram на першу відповідає
+# «message is not modified», і це не має рвати цикл (05.09.2026).
+_real_post_nm = __import__("requests").post
+__import__("requests").post = lambda url, **kw: _R({
+    "ok": False, "error_code": 400,
+    "description": "Bad Request: message is not modified: specified new message "
+                   "content and reply markup are exactly the same"})
+_r = _api_original("editMessageText", chat_id=1, message_id=5, text="x")
+__import__("requests").post = _real_post_nm
+check("api(): «not modified» — не збій, а успіх", _r is not None and _r.get("not_modified"))
+
+_rebuild(_post, readers=(1,))
+_calls[:] = []
+_long = ("Абзац новини з достатньою кількістю слів, щоб пост довелося різати. " * 18).strip()
+_p2 = {"channel": "tgp_news", "id": 78, "text": _long, "photo": "x", "video": False,
+       "link": "https://t.me/tgp_news/78"}
+n.remember_sent(_p2, "Тарас Григорович", 1, [(501, "caption", 0), (502, "text", 1)],
+                body=_long, first_limit=1024)
+def _nm_api(method, **kw):
+    if method.startswith("edit") and kw.get("message_id") == 501:
+        _calls.append((method, kw))
+        return {"not_modified": True}          # перша частина не змінилась
+    return _fake_api(method, **kw)             # той сам пише в _calls
+n.api = _nm_api
+n.config.EDIT_NOTICE = False
+n.check_edits("tgp_news", [dict(_p2, text=_long + " ДОПИСАНО В КІНЦІ.")], "Тарас Григорович")
+n.api = _fake_api
+n.config.EDIT_NOTICE = _notice_keep
+_edited = [kw.get("message_id") for m, kw in _calls if m.startswith("edit")]
+check("перша частина «not modified» → другу все одно правимо", _edited == [501, 502],
+      "правлено: %s" % _edited)
+check("дописане дійшло до читача", any("ДОПИСАНО" in kw.get("text", "")
+      for m, kw in _calls if m == "editMessageText"))
 
 n.api, n.send_media, n.time.sleep = _e_api, _e_media, _e_sleep
 
