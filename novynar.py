@@ -458,6 +458,28 @@ def is_greeting(text):
     return ""
 
 
+def is_thanks(text):
+    """Коротка подяка замість новини: «Дякуємо» плюс скриншот квитанції.
+
+    Дивимось лише на короткий текст (THANKS_MAX_LEN), і лише коли він
+    ПОЧИНАЄТЬСЯ з подяки. Новина «Зеленський подякував партнерам» починається
+    з Зеленського і проходить, довгий пост із «дякую» всередині — теж."""
+    pats = getattr(config, "THANKS_PATTERNS", [])
+    if not pats:
+        return ""
+    bare = re.sub(r"<[^>]+>", " ", text or "")
+    bare = re.sub(r"https?://\S+", " ", bare)
+    bare = re.sub(r"@[\w_]+", " ", bare)
+    bare = norm(bare)
+    if not bare or len(bare) > getattr(config, "THANKS_MAX_LEN", 100):
+        return ""
+    for pat in pats:
+        m = re.search(pat, bare)
+        if m:
+            return m.group(0)
+    return ""
+
+
 def is_daily_toll(text):
     """Щоденне зведення ОВА «вбито стількох, поранено стількох» — не новина.
 
@@ -508,7 +530,11 @@ def visible(text):
     (`t.me/c/1234567890123456`, id вкладень). Візерунок номера картки бачив у
     них картку і викидав звичайну новину — так 21.08.2026 зник пост
     chorleb/466 про Хартію та Єрмака, де жодних грошей не було."""
-    return html_mod.unescape(re.sub(r"<[^>]+>", " ", flat(text)))
+    # Тег стає пробілом, і «<b>Збір</b> на» дає «Збір  на» — два пробіли,
+    # у яких стоп-слово «збір на» не знаходилось (06.09.2026, tgp_news/118972).
+    # Пробіли в рядку зводимо до одного; переноси рядків лишаємо.
+    return re.sub(r"[^\S\n]+", " ",
+                  html_mod.unescape(re.sub(r"<[^>]+>", " ", flat(text))))
 
 
 def is_fundraising(text):
@@ -694,6 +720,9 @@ def passes_filters(text, has_media, channel=None):
     hello = is_greeting(text)
     if hello:
         return False, "побажання («%s»)" % hello
+    thanks = is_thanks(text)
+    if thanks:
+        return False, "подяка («%s»)" % thanks
     toll = is_daily_toll(text)
     if toll:
         return False, "щоденна зведена статистика («%s»)" % toll
