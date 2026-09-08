@@ -480,6 +480,28 @@ def is_thanks(text):
     return ""
 
 
+def is_ad(text):
+    """Реклама послуг замість новини: «для запису пишіть у приватні».
+
+    Картинка з оголошенням, під нею один рядок, як звернутись до продавця
+    (dobropillya_td/70416, «Аерозйомка зруйнованого майна», 08.09.2026).
+    Дивимось лише короткий текст (AD_MAX_LEN): у довгій новині «пишіть»
+    і «консультації» — звичайні слова."""
+    pats = getattr(config, "AD_PATTERNS", [])
+    if not pats:
+        return ""
+    bare = re.sub(r"<[^>]+>", " ", text or "")
+    bare = re.sub(r"https?://\S+", " ", bare)
+    bare = norm(bare)
+    if not bare or len(bare) > getattr(config, "AD_MAX_LEN", 150):
+        return ""
+    for pat in pats:
+        m = re.search(pat, bare)
+        if m:
+            return m.group(0)
+    return ""
+
+
 def is_daily_toll(text):
     """Щоденне зведення ОВА «вбито стількох, поранено стількох» — не новина.
 
@@ -742,6 +764,9 @@ def passes_filters(text, has_media, channel=None):
     promo = is_channel_promo(text)
     if promo:
         return False, "реклама чужого каналу"
+    ad = is_ad(text)
+    if ad:
+        return False, "реклама послуг («%s»)" % ad
     # Після промо і зборів, а не перед ними: «Рекомендую канал колеги» — це
     # реклама, і причину читач має бачити саме таку. Сюди доходить те, від чого
     # після зняття підпису не лишилось новини взагалі.
@@ -1794,7 +1819,11 @@ def handle_command(msg):
 
     if cmd == "/start":
         o = owner()
-        if o is None:                      # перший, хто прийшов, — господиня
+        # Перший, хто прийшов, — господиня. Але якщо власниця задана секретом
+        # NOVYNAR_OWNER, корону отримує лише вона: інакше будь-хто чужий, хто
+        # натисне Start у хвилину без власниці, стає нею назавжди (08.09.2026).
+        if o is None and (not getattr(config, "OWNER_ID", 0)
+                          or uid == config.OWNER_ID):
             with db() as c:
                 c.execute("INSERT OR REPLACE INTO people "
                           "(user_id, username, is_owner, active) VALUES (?,?,1,1)",
@@ -1832,14 +1861,20 @@ def handle_command(msg):
             reply(chat, "Цей бот приватний. Якщо це помилка — напишіть власниці.")
             log.warning("чужий стукав: @%s (%s)", uname, uid)
             who = person_name(uid, uname)
-            reply(o["user_id"], "🔔 У бота стукав <b>%s</b> (<code>%s</code>).\n"
-                                "Свій — впустіть: <code>/allow %s</code>"
-                  % (html_mod.escape(who), uid, who))
+            if o:
+                reply(o["user_id"], "🔔 У бота стукав <b>%s</b> (<code>%s</code>).\n"
+                                    "Свій — впустіть: <code>/allow %s</code>"
+                      % (html_mod.escape(who), uid, who))
             return
         with db() as c:
-            c.execute("INSERT OR REPLACE INTO people "
-                      "(user_id, username, is_owner, active) VALUES (?,?,0,1)",
-                      (uid, uname))
+            # Наявний рядок лише вмикаємо: INSERT OR REPLACE тут перезаписував
+            # і власницю з is_owner = 0 — до кінця зміни господині не було,
+            # а гілка «перший — господиня» відкривалась чужому (08.09.2026).
+            if c.execute("UPDATE people SET active = 1, username = ? "
+                         "WHERE user_id = ?", (uname, uid)).rowcount == 0:
+                c.execute("INSERT INTO people "
+                          "(user_id, username, is_owner, active) VALUES (?,?,0,1)",
+                          (uid, uname))
         reply(chat, "Готово. Новини приходитимуть сюди.\n"
                     "/stop — вимкнути, /digest — віддати накопичене.")
         log.info("підписався @%s (%s)", uname, uid)

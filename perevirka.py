@@ -1040,6 +1040,8 @@ for _cnt, _want in [(1, "новина"), (2, "новини"), (5, "новин"),
 
 block("Хто пройде в бота")
 fresh_db()
+_own0 = config.OWNER_ID
+config.OWNER_ID = 0          # без секрету — господиня той, хто прийшов перший
 _saved_code = config.INVITE_CODE
 config.INVITE_CODE = "test-perepustka"
 sent = []
@@ -1133,6 +1135,8 @@ check("/deny без аргументу нікого не чіпає",
       5 in [p["user_id"] for p in n.readers()] and "Напишіть так" in _ans, _ans[:40])
 _ans = cmd("/deny @")
 check("/deny @ — те саме", 5 in [p["user_id"] for p in n.readers()] and "Напишіть так" in _ans)
+
+config.OWNER_ID = _own0
 
 block("Старт зміни не скасовує /stop власниці")
 fresh_db()
@@ -1748,6 +1752,65 @@ check("«Зеленський подякував партнерам» — нов
 check("довгий пост, що починається з «дякую», — новина",
       n.passes_filters("Дякую всім, хто був сьогодні на Майдані. " + "Ми зібрались, щоб згадати загиблих. " * 4,
                        True, "x")[0])
+
+block("08.09.2026 — /start власниці не знімає з неї прав")
+fresh_db()
+_own_keep = config.OWNER_ID
+config.OWNER_ID = 1
+n.bootstrap_people()
+sent = []
+n.reply = lambda chat, text: sent.append((chat, text))
+def _cmd(text, uid, uname):
+    sent.clear()
+    n.handle_command({"text": text, "from": {"id": uid, "username": uname},
+                      "chat": {"id": uid}})
+    return " ".join(t for _, t in sent)
+_cmd("/stop", 1, "kate")
+check("після /stop власниця поза потоком", 1 not in [p["user_id"] for p in n.readers()])
+_cmd("/start", 1, "kate")
+check("після /start вона знову в потоці", 1 in [p["user_id"] for p in n.readers()])
+check("і лишається власницею", n.owner() and n.owner()["user_id"] == 1)
+check("юзернейм оновлено", n.owner()["username"] == "kate")
+check("/pause їй доступний", "Призупинив" in _cmd("/pause", 1, "kate"))
+n.paused = False
+_ans = _cmd("/start", 999, "chuzhyi")
+check("чужий після цього не стає господинею", n.owner()["user_id"] == 1 and "господине" not in _ans)
+check("чужий не в потоці", 999 not in [p["user_id"] for p in n.readers()])
+check("власниці прийшло сповіщення про чужого", any(c == 1 for c, _ in sent))
+fresh_db()                   # порожня база, але секрет NOVYNAR_OWNER заданий
+_ans = _cmd("/start", 999, "chuzhyi")
+check("на порожній базі корону чужому теж не дають", n.owner() is None and "господине" not in _ans)
+_cmd("/start", 1, "kate")
+check("а власниця за секретом — отримує", n.owner() and n.owner()["user_id"] == 1)
+config.OWNER_ID = _own_keep
+
+block("08.09.2026 — реклама послуг і російські маркери новин")
+# dobropillya_td/70416: картинка «Аерозйомка зруйнованого майна» + рядок під нею
+check("«для запису та консультації пишіть у приватні» з картинкою — реклама послуг",
+      n.passes_filters('<i><b>📩</b></i> Для запису та консультації пишіть у приватні '
+                       'повідомлення: <a href="https://t.me/funnyfferd">@funnyfferd</a>',
+                       True, "dobropillya_td")[1].startswith("реклама послуг"))
+check("«пишите в личные сообщения» — теж",
+      not n.passes_filters("Маникюр, педикюр, наращивание. Пишите в личные сообщения 💅",
+                           True, "dobropillya_td")[0])
+check("новина про запис на консультації — проходить",
+      n.passes_filters("Уряд запустив запис на безоплатні консультації для ВПО через Дію: "
+                       "пишіть у чат-бот, і юрист відповість протягом доби, повідомили в Мінсоцполітики.",
+                       False, "dobropillya_td")[0])
+check("довга новина зі словом «пишіть у приватні» — новина",
+      n.passes_filters("Шахраї розсилають повідомлення від імені Пенсійного фонду: «пишіть у приватні "
+                       "повідомлення для перерахунку». ПФУ нагадує, що ніколи не просить даних карток "
+                       "у месенджерах, а всі перерахунки робить автоматично, повідомляє пресслужба фонду.",
+                       False, "x")[0])
+# yigal_levin/100819
+check("«США начали серию ударов… поступают сообщения о взрывах» — новина, не оперативка",
+      n.passes_filters("США начали серию массированных ударов по Ирану. Помимо Бендер-Аббаса, поступают "
+                       "сообщения о взрывах в иранских портах Конарак и Чабахар.", False, "yigal_levin")[0])
+check("«Минувшей ночью в Брянске уничтожен склад» — новина",
+      n.passes_filters("Минувшей ночью в Брянске уничтожен склад боеприпасов, взрывы продолжались до утра.",
+                       False, "yigal_levin")[0])
+check("«Брянск. Слышны взрывы. Работает ПВО.» — далі оперативка",
+      n.passes_filters("Брянск. Слышны взрывы. Работает ПВО.", False, "yigal_levin")[1].startswith("оперативка"))
 
 print("\n" + "═" * 62)
 print("  ПІДСУМОК: %s правильно, %s помилок" % (PASS, FAIL))
