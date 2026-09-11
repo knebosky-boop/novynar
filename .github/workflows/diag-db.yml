@@ -1,0 +1,17 @@
+name: Діагностика — вивантажити базу
+on:
+  workflow_dispatch:
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/cache/restore@v5
+        with:
+          path: novynar.db
+          key: novynar-db-diag-${{ github.run_id }}
+          restore-keys: novynar-db-
+      - uses: actions/upload-artifact@v4
+        with:
+          name: novynar-db
+          path: novynar.db
+          retention-days: 1
