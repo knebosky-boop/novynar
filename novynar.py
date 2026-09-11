@@ -493,12 +493,20 @@ def is_ad(text):
     bare = re.sub(r"<[^>]+>", " ", text or "")
     bare = re.sub(r"https?://\S+", " ", bare)
     bare = norm(bare)
-    if not bare or len(bare) > getattr(config, "AD_MAX_LEN", 150):
+    if not bare:
         return ""
-    for pat in pats:
-        m = re.search(pat, bare)
-        if m:
-            return m.group(0)
+    if len(bare) <= getattr(config, "AD_MAX_LEN", 150):
+        for pat in pats:
+            m = re.search(pat, bare)
+            if m:
+                return m.group(0)
+    # Пряма ціна послуги («Послуга платна — 2000 грн») терпить довший текст:
+    # dobropillya_td/70465 на 450 знаків (11.09.2026).
+    if len(bare) <= getattr(config, "AD_PRICE_MAX_LEN", 500):
+        for pat in getattr(config, "AD_PRICE_PATTERNS", []):
+            m = re.search(pat, bare)
+            if m:
+                return m.group(0)
     return ""
 
 
@@ -545,6 +553,17 @@ def flat(text):
     return EMOJI_RE.sub(" ", text or "")
 
 
+def bare_len(text):
+    """Довжина самого тексту: без тегів, емодзі й подвійних пробілів.
+
+    Поріг довжини рахувався по flat(), а той теги лишає: емодзі в Telegram
+    приходить як <i><b>☝🏻</b></i> — 15 знаків розмітки, і пост «Осталось
+    менее 100К. Закрываем.» (34 знаки) мав «довжину» 49 і проходив
+    MIN_LENGTH = 40 (yigal_levin/101129, надіслано 10.09.2026 21:32)."""
+    t = re.sub(r"<[^>]+>", " ", flat(text))
+    return len(re.sub(r"\s+", " ", t).strip())
+
+
 def visible(text):
     """Текст без розмітки, але з переносами рядків і пунктуацією.
 
@@ -581,6 +600,26 @@ def body_is_fundraising(text):
     for pat in getattr(config, "FUNDRAISING_BODY_PATTERNS", []):
         if re.search(pat, low, re.IGNORECASE):
             return pat
+    return None
+
+
+def is_fundraising_tail(text):
+    """Хвіст збору без реквізитів: «Осталось менее 100К. Закрываем.»
+
+    Канал дає збір з банкою (його ріже is_fundraising), а за годину — коротке
+    «залишилось 20 000, дотиснемо» вже без адреси. Слів-маркерів грошей у ньому
+    немає, і 09–10.09.2026 два такі хвости Левіна (101061, 101129) пішли
+    читачам. Дивимось лише короткий текст (FUNDRAISING_TAIL_MAX_LEN): у довгій
+    новині «залишилось 100 км» і «закриваємо небо» — звичайні слова.
+    Повертає візерунок, що спрацював, або None."""
+    pats = getattr(config, "FUNDRAISING_TAIL_PATTERNS", [])
+    if not pats or bare_len(text) > getattr(config, "FUNDRAISING_TAIL_MAX_LEN", 120):
+        return None
+    low = visible(text).lower()
+    for pat in pats:
+        m = re.search(pat, low, re.IGNORECASE)
+        if m:
+            return m.group(0)
     return None
 
 
@@ -752,8 +791,10 @@ def passes_filters(text, has_media, channel=None):
     theme = off_topic(low, channel)
     if theme:
         return False, "не наша тема («%s»)" % theme
+    # Довжину міряємо по голому тексту: теги й емодзі в поріг не рахуються
+    # (bare_len; до 11.09.2026 рахувались, і 34 знаки проходили за 40).
     floor = getattr(config, "CHANNEL_MIN_LENGTH", {}).get(channel or "")
-    if floor and len(low.strip()) < floor:
+    if floor and bare_len(text) < floor:
         return False, "закоротке для цього каналу"
     marker = is_alert(text)
     if marker:
@@ -761,6 +802,9 @@ def passes_filters(text, has_media, channel=None):
     money = is_fundraising(text)
     if money:
         return False, "збір грошей"
+    tail = is_fundraising_tail(text)
+    if tail:
+        return False, "хвіст збору («%s»)" % tail
     promo = is_channel_promo(text)
     if promo:
         return False, "реклама чужого каналу"
@@ -783,7 +827,7 @@ def passes_filters(text, has_media, channel=None):
             return False, "стоп-слово «%s»" % w
     if config.KEYWORDS and not any(word_in(low, k) for k in config.KEYWORDS):
         return False, "немає ключових слів"
-    if not has_media and len(low.strip()) < config.MIN_LENGTH:
+    if not has_media and bare_len(text) < config.MIN_LENGTH:
         return False, "закоротке"
     return True, ""
 
