@@ -44,8 +44,13 @@ def check(name, cond, note=""):
 
 print("Бойовий конфіг: REMINDER_TIMES = %r, QUIET_HOURS = %r"
       % (config.REMINDER_TIMES, config.QUIET_HOURS))
-check("у бойовому конфізі години 08:00 і 20:00 на місці",
-      config.REMINDER_TIMES == ["08:00", "20:00"], str(config.REMINDER_TIMES))
+# 12.09.2026: суддя вимкнула нагадування («вимкни нагадування Миколі»), тож
+# бойовий список порожній. Механізм від цього не зник — далі женемо його на
+# підставлених годинах, інакше правка, що його зламає, пройде непоміченою.
+check("у бойовому конфізі нагадування вимкнені (вказівка судді 12.09.2026)",
+      config.REMINDER_TIMES == [], str(config.REMINDER_TIMES))
+_бойові_години = config.REMINDER_TIMES
+config.REMINDER_TIMES = ["08:00", "20:00"]   # лише для цього прогону
 
 _real_dt = dt.datetime
 class _T(_real_dt):
@@ -185,7 +190,7 @@ n.maybe_remind()
 check("без годин у конфізі мовчить навіть о 08:03", not nagady())
 check("і лічильник тримає на нулі, а не копить",
       int(n.get_state("unread", 0)) == 0, "unread = %s" % n.get_state("unread", 0))
-config.REMINDER_TIMES = ["08:00", "20:00"]
+config.REMINDER_TIMES = _бойові_години    # повертаємо бойове значення
 
 print("\n%s ПІДСУМОК ЖИВОГО ПРОГОНУ: %s правильно, %s помилок\n"
       % ("✅" if not fail else "❌", ok, fail))
