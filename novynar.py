@@ -775,6 +775,90 @@ def signature_only(text, channel=""):
     return len(" ".join(rest).strip()) < getattr(config, "SIGNATURE_KEEP_MIN", 25)
 
 
+def is_photo_caption(text, has_media, channel):
+    """Підпис-локація під одиноким фото: «Добропілля · Вулиця Гагаріна».
+
+    Вказівка судді 12.09.2026. Добропілля фотографує наслідки обстрілів вулицями
+    й сипле десятком постів поспіль; судді з них потрібна лише Святогорівка.
+    Ріжемо тільки обривок без речення (is_fragment) — новина з крапкою лишається
+    навіть короткою.
+    """
+    rule = getattr(config, "PHOTO_CAPTION_CHANNELS", {}).get(channel or "")
+    if not rule or not has_media:
+        return False
+    if bare_len(text) > rule.get("max_len", 150):
+        return False
+    low = flat(text).lower()
+    for keep in rule.get("keep", []):
+        if keep in low:
+            return False
+    # ⚠ Саме visible(), а не plain(): plain() опускає текст у нижній регістр,
+    # а все правило тримається на великій літері топоніма (12.09.2026: на цьому
+    # підписи проходили далі, хоч правило вже стояло).
+    рядки = [ln.strip() for ln in visible(text).split("\n") if ln.strip()]
+    if not рядки:
+        return False
+    # Канал пише адреси і в стовпчик, і в один рядок, тому міряємо не рядками,
+    # а словами: знімаємо адресні слова («Вулиця», «Провулок», «Район») і дивимось,
+    # чи лишились слова з МАЛОЇ літери. Топоніми всі з великої, а будь-яке дієслово
+    # чи опис одразу дає мале слово: «Трьох цивільних поранено…» — не підпис.
+    адреси = getattr(config, "PHOTO_CAPTION_ADDRESS", [])
+    службові = {"та", "і", "й", "з", "зі", "на", "у", "в", "до", "під", "біля",
+                "район", "районі", "№", "-", "—",
+                # «Вулиця Заповітна та сусідня», «Ще кадри», «Панорама» —
+                # канал дописує їх до адреси, і через одне мале слово підпис
+                # прослизав як новина.
+                "сусідня", "сусідні", "сусідній", "сусідню", "ще", "кадри",
+                "панорама", "панорами", "також", "частина", "частково"}
+    решта = []
+    for w in " ".join(рядки).replace("#", " ").replace(",", " ").split():
+        low_w = w.lower().strip(".:;()«»\"'")
+        if not low_w or any(low_w.startswith(a.rstrip(".")) for a in адреси):
+            continue
+        if low_w in службові:
+            continue
+        решта.append(w)
+    if решта and all(w[:1].isupper() or not w[:1].isalpha() for w in решта):
+        return " ".join(рядки)[:40]
+    # Зовсім короткий обривок під фото — «Ще кадри з Новодонецького».
+    if bare_len(text) <= rule.get("short_len", 40) and is_fragment(text):
+        return " ".join(рядки)[:40]
+    return False
+
+
+def is_service_ad(text):
+    """Оголошення послуг із контактами: «НЕДВИЖИМОСТЬ В ДНЕПРЕ — ПОД КЛЮЧ … +380…».
+
+    12.09.2026, баг-репорт судді. `is_ad()` таке не бере: він розрахований на
+    короткий пост (AD_MAX_LEN) або на пряму ціну, а тут 916 знаків і ціни немає.
+
+    Дві половини обов'язкові: пропозиція послуги В ЗАГОЛОВКУ (перші
+    SERVICE_AD_HEAD знаків) і контакт (телефон, @нік або заклик звернутись).
+    Саме заголовок: телефон у кінці роз'яснювальної статті про житлові
+    сертифікати — не реклама, такі пости читачам потрібні.
+    """
+    pats = getattr(config, "SERVICE_AD_PATTERNS", None)
+    if not pats:
+        return False
+    vis = re.sub(r"\s+", " ", visible(text))
+    low = vis.lower()
+    phone = re.search(r"(?<!\d)(?:\+?3?8)?0\s*\(?\d{2}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}(?!\d)", vis)
+    nick = re.search(r"@[a-zA-Z_][a-zA-Z0-9_]{3,}", vis)
+    call = re.search(r"\b(зв'?язатися|связаться|звоните|дзвоніть|телефонуйте|звертайтесь|"
+                     r"обращайтесь|пишіть|пишите|напишіть|напишите|замовити|заказать)\b", low)
+    if phone or nick or call:
+        head = low[:getattr(config, "SERVICE_AD_HEAD", 250)]
+        for p in pats:
+            m = re.search(p, head)
+            if m:
+                return m.group(0).strip()
+    # Голий телефон замість новини — «- 0509167723» під фотографією: MIN_LENGTH
+    # його не бере, бо картинка поріг довжини обходить.
+    if phone and bare_len(text) < getattr(config, "SERVICE_AD_PHONE_MAX", 60):
+        return "сам лише телефон"
+    return False
+
+
 def is_statement(text):
     """Офіційна заява: дієслово мовлення І названий той, хто говорить.
 
@@ -849,6 +933,12 @@ def passes_filters(text, has_media, channel=None):
     ad = is_ad(text)
     if ad:
         return False, "реклама послуг («%s»)" % ad
+    service = is_service_ad(text)
+    if service:
+        return False, "оголошення послуг («%s»)" % service
+    caption = is_photo_caption(text, has_media, channel)
+    if caption:
+        return False, "підпис під фото («%s»)" % caption
     # Після промо і зборів, а не перед ними: «Рекомендую канал колеги» — це
     # реклама, і причину читач має бачити саме таку. Сюди доходить те, від чого
     # після зняття підпису не лишилось новини взагалі.
