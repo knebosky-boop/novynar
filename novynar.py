@@ -775,6 +775,44 @@ def signature_only(text, channel=""):
     return len(" ".join(rest).strip()) < getattr(config, "SIGNATURE_KEEP_MIN", 25)
 
 
+def is_statement(text):
+    """Офіційна заява: дієслово мовлення І названий той, хто говорить.
+
+    Знімає ТІЛЬКИ поріг CHANNEL_MIN_LENGTH. Заведена 12.09.2026: поріг Смолія
+    (200 голих знаків) ставився проти сигналок, але ріс і на коротких справжніх
+    новинах — «…заявив міністр фінансів Сергій Марченко» на 113 знаків.
+
+    Самого дієслова замало. «рашисти заявили, що знищили МіГ-29 на аеродромі
+    Васильків» — сигналка: після дієслова одразу підрядне («, що»), а перед ним
+    загальне слово з малої. Тому дивимось поруч із дієсловом: посада зі списку
+    або ім'я з великої літери — і хвіст після дієслова обриваємо на комі та «що».
+    """
+    verbs = getattr(config, "STATEMENT_VERBS", None)
+    if not verbs:
+        return False
+    if bare_len(text) < getattr(config, "STATEMENT_MIN_LEN", 60):
+        return False
+    vis = re.sub(r"\s+", " ", visible(text)).strip()
+    low = vis.lower()
+    near = getattr(config, "STATEMENT_NEAR", 60)
+    who = [w.lower() for w in getattr(config, "STATEMENT_WHO", [])]
+    for v in verbs:
+        for m in re.finditer(r"(?<![а-яіїєґёa-zA-ZА-ЯІЇЄҐЁ])%s(?![а-яіїєґёa-z])"
+                             % re.escape(v.lower()), low):
+            # Перед дієсловом — лише поточне речення, інакше велика літера
+            # з попереднього робить заявою будь-що.
+            перед = re.split(r"[.!?…]\s", vis[max(0, m.start() - near):m.start()])[-1]
+            після = re.split(r"[,;:]|\bщо\b|\bчто\b",
+                             vis[m.end():m.end() + near])[0]
+            for шматок in (після, перед):
+                low_ш = шматок.lower()
+                if any(w in low_ш for w in who):
+                    return v
+                if re.search(r"\b[А-ЯІЇЄҐA-Z][а-яіїєґa-z'\u02bc-]{2,}", шматок):
+                    return v
+    return False
+
+
 def passes_filters(text, has_media, channel=None):
     if is_service(text):
         return False, "службова позначка"
@@ -794,7 +832,7 @@ def passes_filters(text, has_media, channel=None):
     # Довжину міряємо по голому тексту: теги й емодзі в поріг не рахуються
     # (bare_len; до 11.09.2026 рахувались, і 34 знаки проходили за 40).
     floor = getattr(config, "CHANNEL_MIN_LENGTH", {}).get(channel or "")
-    if floor and bare_len(text) < floor:
+    if floor and bare_len(text) < floor and not is_statement(text):
         return False, "закоротке для цього каналу"
     marker = is_alert(text)
     if marker:
