@@ -1467,6 +1467,46 @@ check("записки «канал виправив» немає",
            if m == "sendMessage" and "виправив" in kw.get("text", "")])
 n.config.EDIT_NOTICE = _notice_was
 
+# правка, що перетворює новину на збір, читачам не йде (12.09.2026, tgp_news/119670)
+fresh_db()
+with n.db() as c:
+    c.execute("INSERT INTO people VALUES (1,'kate',1,1)")
+_zbir = {"channel": "tgp_news", "id": 119670, "text": TEXT_OLD, "photo": None,
+         "video": False, "link": "https://t.me/tgp_news/119670"}
+n.send_post(1, dict(_zbir), "Тарас Григорович")
+with n.db() as c:
+    _body_was = c.execute("SELECT body FROM sent WHERE post_id = 119670").fetchone()["body"]
+TEXT_ZBIR = ("<b>Збір завершиться завтра о 20:00. Визначення переможця розіграшу і власника "
+             "прапора з підписом Karaya проведемо одразу по завершенню збору.\n</b>\n"
+             "Дякуємо за підтримку, за розуміння, і терпіння <i><b>🤝</b></i>\n\n"
+             "Це для нас дуже важливо.")
+_zhurnal[:] = []
+n.log.addHandler(_h)
+_calls[:] = []
+n.check_edits("tgp_news", [dict(_zbir, text=TEXT_ZBIR)], "Тарас Григорович")
+check("правку-збір читачам не несемо",
+      not [1 for m, _ in _calls if m.startswith("edit") or m == "sendMessage"],
+      ", ".join(m for m, _ in _calls) or "нічого")
+with n.db() as c:
+    _body_now = c.execute("SELECT body FROM sent WHERE post_id = 119670").fetchone()["body"]
+check("у базі лишається текст, що справді пішов читачам", _body_now == _body_was)
+check("у журналі видно, чому правку не понесли",
+      any("правку не несемо" in l for l in _zhurnal), " | ".join(_zhurnal) or "порожньо")
+_calls[:] = []
+n.check_edits("tgp_news", [dict(_zbir, text=TEXT_ZBIR)], "Тарас Григорович")
+check("ту саму відкинуту правку вдруге не звіряємо", not _calls,
+      "викликів: %s" % len(_calls))
+_calls[:] = []
+n.check_edits("tgp_news", [dict(_zbir, text=TEXT_NEW)], "Тарас Григорович")
+check("чесна правка того самого поста після відкинутої — йде",
+      [1 for m, _ in _calls if m == "editMessageText"])
+TEXT_BANKA = TEXT_NEW + "\nПідтримати канал: https://send.monobank.ua/jar/3bCvZiaNhr"
+_calls[:] = []
+n.check_edits("tgp_news", [dict(_zbir, text=TEXT_BANKA)], "Тарас Григорович")
+check("коротка новина, під яку дописали банку, — правку не несемо",
+      not [1 for m, _ in _calls if m.startswith("edit") or m == "sendMessage"])
+n.log.removeHandler(_h)
+
 # розмітка змінилась, слова ті самі — це не виправлення
 check("інші теги при тих самих словах — не правка",
       n.text_hash("<b>Суд</b> ухвалив рішення") == n.text_hash("<i>Суд</i> ухвалив рішення"))
@@ -1496,11 +1536,15 @@ check("HTML-сутності — не правка",
 fresh_db()
 with n.db() as c:
     c.execute("INSERT INTO people VALUES (1,'kate',1,1)")
-_dots = {"channel": "babel", "id": 55, "text": "Мудру затримали.", "photo": None,
-         "video": False, "link": "https://t.me/babel/55"}
+# Текст реальної довжини: з 13.09.2026 правка проходить фільтри, а голе
+# «Мудру затримали.» прод не надіслав би ніколи («закоротке»).
+_dots = {"channel": "babel", "id": 55, "photo": None, "video": False,
+         "text": "Мудру затримали в аеропорту Бориспіль під час спроби вилетіти за кордон.",
+         "link": "https://t.me/babel/55"}
 n.send_post(1, dict(_dots), "Бабель")
 _calls[:] = []
-n.check_edits("babel", [dict(_dots, text="Мудру затримали?")], "Бабель")
+n.check_edits("babel", [dict(_dots, text=_dots["text"].replace("затримали", "затримали?", 1))],
+              "Бабель")
 check("правку розділових знаків доводимо до читача",
       [1 for m, kw in _calls
        if m == "editMessageText" and "затримали?" in kw.get("text", "")],

@@ -1637,6 +1637,19 @@ def check_edits(channel, posts, title=""):
                 c.execute("UPDATE sent SET hash = ? WHERE channel = ? AND post_id = ?",
                           (new_hash, channel, post["id"]))
             continue
+        # Правка проходить ті самі фільтри, що й новий пост. 12.09.2026
+        # tgp_news/119670 пішов новиною, а за дві хвилини канал переписав його
+        # на «Збір завершиться завтра… розіграшу» — і push_edit доніс збір
+        # читачам. Не пройшла — у читача лишається версія, що вже пішла;
+        # відбиток оновлюємо, щоб не звіряти ту саму правку кожну зміну.
+        ok, why = passes_filters(post.get("text"),
+                                 bool(post.get("photo") or post.get("video")), channel)
+        if not ok:
+            log.info("%s/%s: правку не несемо (%s)", channel, post["id"], why)
+            with db() as c:
+                c.execute("UPDATE sent SET hash = ? WHERE channel = ? AND post_id = ?",
+                          (new_hash, channel, post["id"]))
+            continue
         big = edit_is_big(row["body"] or "", body)
         log.info("%s/%s: канал виправив пост (%s)", channel, post["id"],
                  "суттєво" if big else "дрібниця")
