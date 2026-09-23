@@ -33,6 +33,7 @@ SOURCES = [
     "ShrikeNews",
     "RomanShrike",
     "yigal_levin",
+    "ToBeOr_Official",   # 23.09.2026 — «Быть Или», за вказівкою судді
 ]
 
 # Канали, які більше не читаємо. Без цього списку правка SOURCES нічого не дає:
