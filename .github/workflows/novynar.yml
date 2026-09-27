@@ -55,6 +55,9 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           NOVYNAR_OWNER: ${{ secrets.NOVYNAR_OWNER }}
           NOVYNAR_READERS: ${{ secrets.NOVYNAR_READERS }}
+          NOVYNAR_MIRROR_KEY: ${{ secrets.NOVYNAR_MIRROR_KEY }}
+          NOVYNAR_MIRROR_HOST: ${{ secrets.NOVYNAR_MIRROR_HOST }}
+          NOVYNAR_MIRROR_HOSTKEY: ${{ secrets.NOVYNAR_MIRROR_HOSTKEY }}
           TZ: Europe/Kyiv
         run: python novynar.py --loop-minutes 18
 

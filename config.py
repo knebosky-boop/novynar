@@ -9,6 +9,11 @@ import os
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 OWNER_ID = int(os.environ.get("NOVYNAR_OWNER") or 0)
 READERS = [int(x) for x in os.environ.get("NOVYNAR_READERS", "").replace(",", " ").split()]
+# Дзеркало для моста WhatsApp на сервері (27.09.2026): ключ, адреса і відбиток
+# сервера — у сховищі секретів GitHub. Порожньо — дзеркало вимкнене (локальні прогони).
+MIRROR_KEY = os.environ.get("NOVYNAR_MIRROR_KEY", "")
+MIRROR_HOST = os.environ.get("NOVYNAR_MIRROR_HOST", "")
+MIRROR_HOSTKEY = os.environ.get("NOVYNAR_MIRROR_HOSTKEY", "")
 
 if not BOT_TOKEN:
     try:

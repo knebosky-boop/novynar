@@ -99,6 +99,9 @@ def init_db():
         CREATE TABLE IF NOT EXISTS state (
             k TEXT PRIMARY KEY, v TEXT
         );
+        CREATE TABLE IF NOT EXISTS mirror (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT, ts INTEGER
+        );
         """)
 
 
@@ -1138,6 +1141,8 @@ def api(method, **params):
             r = requests.post(API + method, data=params, timeout=60)
             j = r.json()
             if j.get("ok"):
+                if method == "sendMessage":
+                    mirror_note(params.get("chat_id"), j["result"])
                 return j["result"]
             desc = j.get("description", "")
             if "message is not modified" in desc.lower():
@@ -1253,6 +1258,7 @@ def send_media(uid, method, field, blob, filename, mime, caption, file_id=None):
             if j.get("ok"):
                 res = j["result"]
                 LAST_MEDIA_MSG = res.get("message_id")
+                mirror_note(uid, res)
                 got = res.get(field) or res.get("document")
                 if isinstance(got, list):
                     got = got[-1]
@@ -1457,6 +1463,109 @@ def close_tags(s):
 # ───────────────  канал виправив уже надіслану новину  ───────────────
 
 LAST_MEDIA_MSG = None       # номер останнього повідомлення з файлом
+
+# ── Дзеркало для моста WhatsApp (27.09.2026) ────────────────────────────────
+# Раніше міст на маку читав чат власниці з ботом під її акаунтом Telegram.
+# Тепер бот сам віддає серверу моста те, що надіслав власниці: повідомлення
+# Bot API як є (текст + entities, фото/відео байтами) — по SSH-ключу, який на
+# сервері вміє лише покласти це в чергу. Сервер лежить — лишається в таблиці
+# mirror і доїжджає наступним обходом (до MIRROR_KEEP_HOURS).
+MIRROR = []
+MIRROR_UID = None
+MIRROR_KEEP_HOURS = 48
+MIRROR_MAX_FILE = 20_000_000     # getFile Bot API більше не віддає
+
+
+def mirror_on():
+    return bool(getattr(config, "MIRROR_KEY", "") and getattr(config, "MIRROR_HOST", ""))
+
+
+def mirror_note(uid, res):
+    if MIRROR_UID is None or not isinstance(res, dict) or not res.get("message_id"):
+        return
+    if str(uid) == str(MIRROR_UID):
+        MIRROR.append(res)
+
+
+def mirror_file(file_id):
+    f = api("getFile", file_id=file_id)
+    if not f or not f.get("file_path"):
+        return None
+    r = requests.get("https://api.telegram.org/file/bot%s/%s" % (config.BOT_TOKEN, f["file_path"]),
+                     timeout=120)
+    return r.content if r.ok else None
+
+
+def mirror_store(msgs):
+    import base64
+    import json
+    items = []
+    for m in msgs:
+        it = {"message_id": m["message_id"], "date": m.get("date") or int(time.time()),
+              "text": m.get("text") or m.get("caption") or "",
+              "entities": m.get("entities") or m.get("caption_entities") or []}
+        media, ext = None, ""
+        if m.get("photo"):
+            media, ext = m["photo"][-1], ".jpg"
+        elif m.get("video") or m.get("animation"):
+            media, ext = m.get("video") or m.get("animation"), ".mp4"
+        if media and (media.get("file_size") or 0) < MIRROR_MAX_FILE:
+            try:
+                blob = mirror_file(media["file_id"])
+                if blob:
+                    it["media_b64"], it["ext"] = base64.b64encode(blob).decode(), ext
+            except Exception as e:
+                log.warning("дзеркало: медіа %s не стягнулось (%s)", m["message_id"], e)
+        items.append(it)
+    with db() as c:
+        c.execute("INSERT INTO mirror (payload, ts) VALUES (?, ?)",
+                  (json.dumps({"items": items}, ensure_ascii=False), int(time.time())))
+    mirror_push()
+
+
+def mirror_push():
+    """Відвантажити на сервер усе, що чекає. Мовчки нічого не губимо: збій — лишаємо."""
+    if not mirror_on():
+        return
+    import subprocess
+    import tempfile
+    with db() as c:
+        c.execute("DELETE FROM mirror WHERE ts < ?", (int(time.time()) - MIRROR_KEEP_HOURS * 3600,))
+        rows = [dict(r) for r in c.execute("SELECT id, payload FROM mirror ORDER BY id")]
+    if not rows:
+        return
+    d = tempfile.mkdtemp(prefix="mirror-")
+    key, kh = os.path.join(d, "k"), os.path.join(d, "kh")
+    try:
+        with open(key, "w") as f:
+            f.write(config.MIRROR_KEY.strip() + "\n")
+        os.chmod(key, 0o600)
+        with open(kh, "w") as f:
+            f.write(getattr(config, "MIRROR_HOSTKEY", "") + "\n")
+        for r in rows:
+            try:
+                p = subprocess.run(
+                    ["ssh", "-i", key, "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
+                     "-o", "UserKnownHostsFile=" + kh, "-o", "StrictHostKeyChecking=yes",
+                     "-o", "ConnectTimeout=15", config.MIRROR_HOST],
+                    input=r["payload"].encode(), capture_output=True, timeout=90)
+            except Exception as e:
+                log.warning("дзеркало: сервер не відповів (%s), лишаю %s у черзі", e, len(rows))
+                return
+            if p.returncode != 0:
+                log.warning("дзеркало: сервер відмовив (%s: %s), лишаю в черзі",
+                            p.returncode, p.stderr.decode(errors="replace")[-200:].strip())
+                return
+            with db() as c:
+                c.execute("DELETE FROM mirror WHERE id = ?", (r["id"],))
+            log.info("дзеркало: віддано серверу %s", p.stdout.decode(errors="replace").strip())
+    finally:
+        for f in (key, kh):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        os.rmdir(d)
 
 
 def plain(text):
@@ -1665,6 +1774,23 @@ def check_edits(channel, posts, title=""):
 
 
 def send_post(uid, post, title):
+    """Віддати новину читачеві; що пішло власниці — ще й дзеркалом на сервер моста."""
+    global MIRROR_UID
+    MIRROR.clear()
+    MIRROR_UID = uid if mirror_on() and uid == getattr(config, "OWNER_ID", 0) else None
+    try:
+        return _send_post(uid, post, title)
+    finally:
+        if MIRROR_UID is not None and MIRROR:
+            try:
+                mirror_store(list(MIRROR))
+            except Exception as e:
+                log.warning("дзеркало: не записав (%s)", e)
+        MIRROR_UID = None
+        MIRROR.clear()
+
+
+def _send_post(uid, post, title):
     global LAST_MEDIA_MSG
     body = post["text"] or ""
     msgs = []                      # чим саме віддали новину: номери повідомлень
@@ -2253,6 +2379,10 @@ def once():
     if stale:
         log.info("пропущено застарілих команд: %s", stale)
     round_trip()
+    try:
+        mirror_push()
+    except Exception as e:
+        log.warning("дзеркало: %s", e)
     if config.HOLD_MINUTES:
         release_ready()
     if not in_quiet_hours():
