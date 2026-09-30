@@ -398,6 +398,28 @@ def is_fragment(text):
     return not re.search(r"[.!?…]", bare)
 
 
+def is_attack_forecast(text):
+    """Прогноз атаки: «Заходитимуть з півночі… увага для Василькова, Обухова…».
+
+    Довга сигналка без жодного маркера: тверді її не ловлять, м'які діють лише
+    до LIVE_ATTACK_MAX_LEN. Кожна ознака поодинці живе й у новині, тому ріжемо
+    лише збіг ALERT_FORECAST_MIN різних ознак (30.09.2026, smolii_ukraine/167833).
+    Повертає знайдені уривки через « + » або порожній рядок."""
+    pats = getattr(config, "ALERT_FORECAST_PATTERNS", [])
+    if not pats or bare_len(text) > getattr(config, "ALERT_FORECAST_MAX_LEN", 600):
+        return ""
+    vis = visible(text or "")
+    found = {}
+    for name, pat in pats:
+        if name not in found:
+            m = re.search(pat, vis)
+            if m:
+                found[name] = re.sub(r"\s+", " ", m.group(0)).strip()
+    if len(found) < getattr(config, "ALERT_FORECAST_MIN", 2):
+        return ""
+    return " + ".join(found.values())
+
+
 def is_alert(text):
     """Сигналізація замість новини: тривоги, дорозвідка, атака в моменті.
 
@@ -411,6 +433,10 @@ def is_alert(text):
     hits = [m for m in config.ALERT_MARKERS if starts_word(low, m)]
     if hits and not (len(low) > 600 and len(hits) < 3):
         return hits[0]
+
+    forecast = is_attack_forecast(text)
+    if forecast:
+        return "прогноз атаки: " + forecast
 
     soft = [m for m in getattr(config, "LIVE_ATTACK_MARKERS", [])
             if starts_word(low, m)]
