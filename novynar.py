@@ -252,9 +252,24 @@ def looks_similar(a, b):
     return jaccard
 
 
+def explicit_dates(anc):
+    """Явні календарні дати серед опор: «@29.вере» — це «29 вересня»."""
+    return {a for a in anc if a.startswith("@")}
+
+
 def is_same_story(tok_a, anc_a, tok_b, anc_b):
     """Чи це та сама подія. Повертає (так/ні, збіг)."""
     score = looks_similar(tok_a, tok_b)
+    # 01.10.2026: щоденні зведення («Загальні бойові втрати противника на
+    # 29 вересня», «…на 30 вересня») мають той самий шаблон і ті самі слова —
+    # tokens() цифри викидає, — тож схожість 0.77–0.93 і кожне наступне
+    # зведення ріжеться 48-годинним дедупом як повтор попереднього. Коли в
+    # обох текстах є явні дати й жодної спільної — це звіти за різні дні, а не
+    # повтор. Вимикач — config.DATES_DIFFER_NOT_SAME.
+    if getattr(config, "DATES_DIFFER_NOT_SAME", True):
+        dates_a, dates_b = explicit_dates(anc_a), explicit_dates(anc_b)
+        if dates_a and dates_b and not (dates_a & dates_b):
+            return False, score
     if score >= config.SIMILARITY:
         return True, score
     # Слабший збіг словами рятують спільні власні назви, абревіатури й дати.
