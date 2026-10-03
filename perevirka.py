@@ -2431,6 +2431,69 @@ check("дрібну правку мосту не несемо", not _store, str(
 config.OWNER_ID = _m_owner
 n.api, n.mirror_store, n.mirror_on, n.time.sleep = _m_api, _m_store, _m_on, _m_sleep
 
+block("03.10.2026 (вечір) — меню DeepState, «букмекер» і «казино» в новині")
+# ShrikeNews/33030 = tgp_news/121058: аналітика DeepState різалась через кнопку
+# «Підтримати нас» → buymeacoffee у меню-підвалі (два рядки: порожнє посилання + меню).
+DS_TILO = ("<b>Приріст окупованих територій за вересень склав 66 кв км, але рано робити висновки</b>\n\n"
+           "Інформація про просування Сил Оборони України подається із затримкою. Більшість звільнених "
+           "територій з'являється на мапі лише після офіційного оголошення, і тому місячні підсумки "
+           "змінюються заднім числом. За нашими даними, ще від 270 до 320 звільнених квадратних "
+           "кілометрів відразу на кількох ділянках фронту були здійснені в період з липня по вересень.\n\n"
+           "Математика війни стає складнішою, але для нас операційна безпека наших військ залишається "
+           "найвищим пріоритетом у роботі.")
+DS_MENU = ('\n<a href="https://www.buymeacoffee.com/deepstateua/membership">\n'
+           '</a><a href="https://deepstatemap.live/">Мапа</a><i><b>🛑</b></i>'
+           '<a href="https://deepstateua.com/">Блог</a><i><b>🛑</b></i>'
+           '<a href="http://t.me/newsDeepStatebot">Написати нам</a><i><b>🛑</b></i> '
+           '<a href="https://t.me/help_deepstateua">ЗСУHelp</a><i><b>🛑</b></i>'
+           '<a href="https://www.buymeacoffee.com/deepstateua/membership">Підтримати нас</a>')
+_ds = _prod(DS_TILO + DS_MENU, "ShrikeNews")
+check("меню DeepState зрізано разом із порожнім посиланням над ним",
+      "buymeacoffee" not in _ds and "Мапа" not in _ds and _ds.endswith("роботі."), _ds[-80:])
+check("аналітика DeepState іде новиною (ShrikeNews/33030)",
+      n.passes_filters(_ds, True, "ShrikeNews")[0], n.passes_filters(_ds, True, "ShrikeNews")[1])
+check("те саме в tgp_news/121058",
+      n.passes_filters(_prod(DS_TILO + DS_MENU, "tgp_news"), True, "tgp_news")[0])
+check("рядок-меню впізнано формою", n.is_link_menu(DS_MENU.split("\n")[-1]))
+check("останнє речення з двома посиланнями — не меню",
+      not n.is_link_menu('Детальніше — у <a href="https://a.ua">звіті</a> та <a href="https://b.ua">заяві</a> МЗС'))
+check("речення з трьома посиланнями й словами між ними — не меню",
+      not n.is_link_menu('Про це заявили <a href="x">Сибіга</a>, <a href="y">Умєров</a> і <a href="z">Буданов</a>'))
+check("«Закликаю партнерів підтримати нас» останнім рядком лишається",
+      "підтримати нас" in _prod(DS_TILO + "\nЗакликаю партнерів підтримати нас ППО.", "tgp_news"))
+_yt = ('<b>❗️Это вариант обзора</b>\n\n<a href="https://www.youtube.com/watch?v=N01Ui0KGs7o">'
+       'https://www.youtube.com/watch?v=N01Ui0KGs7o</a>\n\n🇺🇦<a href="http://t.me/zvizdecmanhustu">Подписаться на канал</a>')
+check("голе посилання над підписом лишається (zvizdecmanhustu/3085)",
+      "youtube.com/watch" in _prod(_yt, "zvizdecmanhustu"), _prod(_yt, "zvizdecmanhustu")[-60:])
+check("емодзі-рядок над підписом лишається, як було (chorleb/686)",
+      "😺" in _prod("Британці молодці. І це поки що спрацювало.\n<i><b>😺</b></i>\n\n<a href=\"https://t.me/x\"> Підпишись на Чорного лебедя</a>", "chorleb"))
+check("без зрізаного підпису порожнє посилання в хвості не чіпаємо",
+      n.cut_signature(DS_TILO + '\n<a href="https://x.ua"></a>', "tgp_news") == DS_TILO + '\n<a href="https://x.ua"></a>')
+
+BUKMEKER = ("<b>Интересно - рекрутинг в армию РФ просадил букмекерский рынок.</b>\n\n"
+            "Похоже, среди тех, кто заключил контракты с МО РФ, высокий процент лудоманов. И, думаю, "
+            "здесь дело не только в том, что они проиграли все и пошли за деньгами, чтобы покрыть долги. "
+            "Возможно, играет роль извращенная тяга к риску: вначале рисковали деньгами, чтобы выиграть "
+            "побольше, а потом поставили на кон свою жизнь ради крупных выплат. Как мы видим по сводкам "
+            "потерь, и на этих ставках они прогорают.")
+check("«просадил букмекерский рынок» у новині — проходить (ShrikeNews/33035)",
+      n.passes_filters(BUKMEKER, True, "ShrikeNews")[0], n.passes_filters(BUKMEKER, True, "ShrikeNews")[1])
+KAZYNO = ("Краткое содержание года. Это как чувак, который пришел в казино с чемоданом денег, долго играл, "
+          "не делая крупных ставок, но все равно наступил момент, когда он все слил. " + "Экономика РФ " * 25)
+check("«пришел в казино» як порівняння в довгому огляді — проходить (RomanShrike/2567)",
+      n.passes_filters(KAZYNO, False, "RomanShrike")[0])
+check("коротке «Найкраще онлайн-казино» — ріжемо",
+      not n.passes_filters("Найкраще онлайн-казино України чекає на тебе! Грай зараз і забирай своє.",
+                           True, "tgp_news")[0])
+_kaz_long = ("Онлайн-казино нового покоління. " + "Сотні ігор, швидкі виплати, чесні умови для кожного гравця. " * 6
+             + "Реєструйся та отримай бонус 200% на перший депозит!")
+check("довга реклама казино з «бонус» — ріжемо",
+      not n.passes_filters(_kaz_long, True, "tgp_news")[0], n.passes_filters(_kaz_long, True, "tgp_news")[1])
+check("«переходить у наступ» не є ознакою реклами", n.is_gambling_ad(
+      ("букмекери " + "армія переходить у наступ " * 20).lower(), "", "букмекери " + "армія переходить у наступ " * 20) is None)
+check("бренд букмекера лишається стоп-словом і в довгому тексті",
+      not n.passes_filters("1xbet " + BUKMEKER, True, "ShrikeNews")[0])
+
 print("\n" + "═" * 62)
 print("  ПІДСУМОК: %s правильно, %s помилок" % (PASS, FAIL))
 print("═" * 62)

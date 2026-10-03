@@ -760,6 +760,22 @@ def cut_donation(text):
     return close_tags(head)
 
 
+def is_link_menu(line):
+    """Чи є рядок меню каналу: кілька посилань і між ними лише значки.
+
+    «Мапа🛑Блог🛑Написати нам🛑ЗСУHelp🛑Підтримати нас» — підвал DeepState, який
+    Shrike і tgp_news передруковують разом із аналітикою. Остання кнопка веде на
+    buymeacoffee, і стоп-слово різало всю новину (ShrikeNews/33030 і tgp_news/121058,
+    03.10.2026, 1294 знаки). Слова «підтримати нас» у SIGNATURE_MARKS не додано
+    свідомо: «Закликаю партнерів підтримати нас» буває останнім рядком новини.
+    Меню ж упізнається формою — поза посиланнями немає слів."""
+    texts = [plain(t).strip() for t in re.findall(r"<a\b[^>]*>(.*?)</a>", line or "", re.S)]
+    if sum(1 for t in texts if t) < getattr(config, "LINK_MENU_MIN", 3):
+        return False
+    rest = plain(re.sub(r"<a\b[^>]*>.*?</a>", " ", line, flags=re.S))
+    return sum(1 for ch in rest if ch.isalpha()) < 3
+
+
 def cut_signature(text, channel=""):
     """Відрізає службовий підпис каналу в хвості («Підписатися на канал»).
 
@@ -772,7 +788,8 @@ def cut_signature(text, channel=""):
     max_line = getattr(config, "SIGNATURE_MAX_LINE", 120)
     lines = text.split("\n")
     changed = False
-    for _ in range(getattr(config, "SIGNATURE_MAX_LINES", 3)):
+    cuts = 0
+    while cuts < getattr(config, "SIGNATURE_MAX_LINES", 3):
         i = len(lines) - 1
         while i >= 0 and not lines[i].strip():
             i -= 1
@@ -780,12 +797,22 @@ def cut_signature(text, channel=""):
             break
         bare = plain(lines[i]).strip()
         low = bare.lower()
+        # Над зрізаним підписом лишився рядок із самої розмітки — це його ж
+        # залишок: у DeepState меню починається з порожнього <a href=buymeacoffee>
+        # окремим рядком, і без цього адреса доживала до стоп-слова.
+        # Лише рядок, де НІЧОГО видимого: plain() знімає й адреси, й емодзі, а
+        # голе посилання на YouTube над «Подписаться на канал» — зміст поста.
+        if changed and not html_mod.unescape(re.sub(r"<[^>]+>", "", lines[i])).strip():
+            lines = lines[:i]
+            continue
         if len(bare) > max_line:
             break
         hit = any(w in low for w in marks) or \
-            (channel and low.strip("@ ").replace(" ", "") == channel.lower())
+            (channel and low.strip("@ ").replace(" ", "") == channel.lower()) or \
+            is_link_menu(lines[i])
         if not hit:
             break
+        cuts += 1
         head = "\n".join(lines[:i]).rstrip()
         # Тут стояв поріг SIGNATURE_MIN_BODY: якщо під підписом лишалось менше
         # 100 знаків, підпис НЕ різався взагалі — і «Подписаться | Предложить
@@ -1018,6 +1045,26 @@ def is_strike_report(text):
     return "%s … %s" % (hit.group(0).strip(), obj.group(0).strip()) if obj else ""
 
 
+def is_gambling_ad(low, vis, text):
+    """«Букмекер»/«казино» — реклама лише в короткому пості або поруч з її ознакою.
+
+    Повертає слово-ознаку або None. У довгій новині ці слова — звичайна лексика:
+    «рекрутинг просадил букмекерский рынок» (ShrikeNews/33035, 03.10.2026)."""
+    # Дефіс перед словом дозволено: «онлайн-казино» — найчастіша форма реклами,
+    # а starts_word() його не бачила (і старе стоп-слово теж).
+    def hit(t, w):
+        return re.search(r"(?<![\w'’])" + re.escape(w), t) is not None
+    word = next((w for w in getattr(config, "GAMBLING_SOFT", [])
+                 if hit(low, w) or hit(vis, w)), None)
+    if not word:
+        return None
+    if bare_len(text) <= getattr(config, "GAMBLING_SOFT_MAX_LEN", 300):
+        return word
+    cue = next((c for c in getattr(config, "GAMBLING_AD_CUES", [])
+                if starts_word(low, c) or starts_word(vis, c)), None)
+    return "%s + %s" % (word, cue) if cue else None
+
+
 def passes_filters(text, has_media, channel=None):
     if is_service(text):
         return False, "службова позначка"
@@ -1080,6 +1127,9 @@ def passes_filters(text, has_media, channel=None):
         wl = w.lower()
         if starts_word(low, wl) or starts_word(vis, wl):
             return False, "стоп-слово «%s»" % w
+    soft = is_gambling_ad(low, vis, text)
+    if soft:
+        return False, "азартна реклама («%s»)" % soft
     if config.KEYWORDS and not any(word_in(low, k) for k in config.KEYWORDS):
         return False, "немає ключових слів"
     if not has_media and bare_len(text) < config.MIN_LENGTH:
