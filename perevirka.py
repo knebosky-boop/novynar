@@ -1364,7 +1364,7 @@ n.api, n.grab_video, n.grab_photo, n.send_media = _api_real, _grabv_real, _grabp
 
 block("Стійкість до збоїв")
 check("порожній текст не шлемо", not n.passes_filters("", False, "babel")[0])
-check("медіа без тексту проходить", n.passes_filters(None, True, "babel")[0])
+check("медіа без тексту ріжемо (вказівка судді 03.10.2026)", not n.passes_filters(None, True, "babel")[0])
 check("битий URL картинки не валить", n.grab_photo("https://cdn4.telesco.pe/file/nema.jpg") is None)
 check("не-картинка відсіюється", n.grab_photo("https://t.me/babel") is None)
 check("обірваний тег закривається", n.close_tags("текст <b>жирний").endswith("</b>"))
@@ -2081,7 +2081,9 @@ check("«ГРУЗОВЫЕ ГРУЗОПАССАЖИРСКИЕ ПЕРЕВОЗКИ 
                        "Из Донецкой, Харьковской, Днепропетровской областей по всей Украине",
                        True, "dobropillya_td")[1].startswith("оголошення послуг"))
 check("голий телефон під фото — не новина",
-      n.passes_filters("- 0509167723", True, "dobropillya_td")[1].startswith("оголошення послуг"))
+      # з 03.10.2026 його раніше ріже is_letterless — причина інша, вердикт той самий
+      n.passes_filters("- 0509167723", True, "dobropillya_td")[1] in (n.LETTERLESS,)
+      or n.passes_filters("- 0509167723", True, "dobropillya_td")[1].startswith("оголошення послуг"))
 # 🔴 Головна межа правила: телефон У КІНЦІ роз'яснювальної статті — не реклама.
 # Перша редакція без вимоги «пропозиція в заголовку» зрізала три такі пости.
 СТАТТЯ = ("Як отримати житловий сертифікат, якщо частина нерухомості ваша, а зв'язку зі "
@@ -2313,6 +2315,121 @@ check("форма фотофіксації без фото — правило п
 check("форма фотофіксації на іншому каналі — правило підписів мовчить",
       not n.passes_filters("Харків\n\nПроспект Перемоги та центральне перехрестя", True,
                            "tgp_news")[1].startswith("підпис під фото"))
+
+block("03.10.2026 — Північний міст, пости без слів, стріми, правка в WhatsApp")
+# 1) Поріг Смолія: влучання в названий об'єкт проходить (168826–168828 — до читачів не дійшли).
+for _t, _m in [("Нанесений удар по Північному мосту", True),
+               ("Влучання в Північний міст. \n\nЕкстрені служби прямують на місце. \nКличко", False),
+               ("Момент удару по Північному мосту", True),
+               ("Шахед влучив у багатоповерхівку на Троєщині", False)]:
+    check("Смолій: «%s» — новина" % _t[:34].replace("\n", " "),
+          n.passes_filters(_t, _m, "smolii_ukraine")[0], n.passes_filters(_t, _m, "smolii_ukraine")[1])
+for _t in ["Бровари/район\n\nВиліз шахед", "Збитий.", "Можливий удар по енергетиці Києва",
+           "Тимчасово без загрози", "Три штуки біля Славутича проходять"]:
+    check("Смолій: «%s» — і далі ріжемо" % _t[:34].replace("\n", " "),
+          not n.passes_filters(_t, False, "smolii_ukraine")[0])
+check("«по місту» — не «міст»", not n.is_strike_report("Удар по місту, подробиці згодом"))
+# 2) Пост без слів (tgp_news/121030 «🤷‍♂», щоранку «+1710🐷») ріжемо і з картинкою.
+for _t in ["🤷‍♂️", "<i><b>🤔</b></i>", "+1710🐷", "🔥🔥🔥", '<a href="https://x.com/a/status/1/photo/1">/</a>']:
+    check("без слів з фото ріжемо: %r" % _t[:20],
+          n.passes_filters(_t, True, "tgp_news")[1] == n.LETTERLESS)
+check("пост із самого посилання на статтю лишається (serhii_flash/7518)",
+      n.passes_filters('<a href="https://suspilne.media/1340070-ataki/">https://suspilne.media/1340070-ataki/</a>',
+                       True, "serhii_flash")[1] != n.LETTERLESS)
+check("коротка новина з фото лишається", n.passes_filters("Наслідки удару по Дніпру", True, "tgp_news")[0])
+# 3) Анонс стріму (zvizdecmanhustu/3621) ріжемо, «ефір» у новині — ні.
+check("анонс стріму каналу ріжемо",
+      n.passes_filters("💬Напоминаю тем, кому интересно: сегодня в 20:00 на YouTube 5-го канала стрим с "
+                       "Яной Холдной, вживую отвечаем на вопросы\n\nhttps://www.youtube.com/watch?v=x",
+                       False, "zvizdecmanhustu")[1].startswith("анонс стріму"))
+for _t in ["Телеканал Армія TV тимчасово не виходить в ефір через удари рф по дата-центрах у Києві. "
+           "Команда працює над відновленням мовлення.",
+           "Зеленський у прямому ефірі телемарафону заявив, що Україна отримає нові системи ППО до зими.",
+           "Ситуація стрімко змінюється: Україна стримує наступ на Покровському напрямку, повідомили в Генштабі."]:
+    check("новина з «ефір/стрімко» лишається: %s" % _t[:30], n.passes_filters(_t, False, "tgp_news")[0])
+
+# 4) Пост без слів чекає тексту: дописали — іде як новий; позиція каналу назад не їде.
+fresh_db()
+_r_api, _r_fetch, _r_bc, _r_rem = n.api, n.fetch_channel, n.broadcast, n.remember
+_bc = []
+n.api = lambda m, **kw: {"ok": True}
+n.broadcast = lambda post, title: _bc.append(post["id"])
+n.remember = lambda ch, t: None
+with n.db() as c:
+    c.execute("INSERT INTO sources (channel, title, last_id, active) VALUES ('tgp_news','Т',10,1)")
+_shown = [{"id": 11, "text": "🤷‍♂️", "photo": "p.jpg", "video": False, "link": "l11"}]
+n.fetch_channel = lambda ch: ("Т", [dict(p) for p in _shown])
+_r_src = n.sources
+n.sources = lambda: [{"channel": "tgp_news", "title": "Т", "last_id": n.db().execute(
+    "SELECT last_id FROM sources WHERE channel='tgp_news'").fetchone()[0]}]
+n.round_trip()
+with n.db() as c:
+    _held = c.execute("SELECT COUNT(*) FROM bare_held").fetchone()[0]
+check("пост без слів не пішов і чекає тексту", not _bc and _held == 1, "надіслано %s, чекає %s" % (_bc, _held))
+_shown = [{"id": 11, "text": "🤷‍♂️\n\nНа питання, куди подівся дефіцит бюджету, джерело у владі "
+           "пояснило, що гроші вдалося знайти: частину візьмуть з видатків на зброю.",
+           "photo": "p.jpg", "video": False, "link": "l11"},
+          {"id": 12, "text": "🤔", "photo": "p.jpg", "video": False, "link": "l12"}]
+n.round_trip()
+with n.db() as c:
+    _last = c.execute("SELECT last_id FROM sources").fetchone()[0]
+    _held = sorted(r[0] for r in c.execute("SELECT post_id FROM bare_held"))
+check("канал дописав текст — пост іде як новий", _bc == [11], str(_bc))
+check("новий пост без слів став чекати замість старого", _held == [12], str(_held))
+check("позиція каналу пішла вперед, не назад", _last == 12, str(_last))
+_shown = [dict(_shown[0]), {"id": 13, "text": "Звичайна новина про відновлення руху Південним мостом у Києві.",
+          "photo": None, "video": False, "link": "l13"}]
+_bc[:] = []
+n.round_trip()
+check("вже повернутий пост удруге не йде", _bc == [13], str(_bc))
+n.api, n.fetch_channel, n.broadcast, n.remember, n.sources = _r_api, _r_fetch, _r_bc, _r_rem, _r_src
+
+# 5) Суттєва правка того, що пішло власниці, — мосту новим повідомленням.
+fresh_db()
+_m_api, _m_store, _m_on, _m_sleep = n.api, n.mirror_store, n.mirror_on, n.time.sleep
+_m_owner = getattr(config, "OWNER_ID", 0)
+config.OWNER_ID = 1
+_store, _mid2 = [], [500]
+def _api_m(method, **kw):
+    if method.startswith("send"):
+        _mid2[0] += 1
+        return {"message_id": _mid2[0], "text": kw.get("text", "")}
+    if method == "editMessageText":
+        return {"message_id": kw["message_id"], "date": 1, "text": "Т\nновий текст",
+                "entities": [{"type": "bold", "offset": 0, "length": 1}]}
+    if method == "editMessageCaption":
+        return {"message_id": kw["message_id"], "date": 1, "caption": "підпис",
+                "photo": [{"file_id": "F", "file_size": 10}]}
+    return {"ok": True}
+n.api = _api_m
+n.mirror_on = lambda: True
+n.mirror_store = lambda msgs: _store.append(msgs)
+n.time.sleep = lambda _s: None
+with n.db() as c:
+    c.execute("INSERT INTO people VALUES (1,'kate',1,1)")
+    c.execute("INSERT INTO people VALUES (2,'druh',0,1)")
+_p = {"channel": "tgp_news", "id": 88, "text": TEXT_OLD, "photo": None, "video": False,
+      "link": "https://t.me/tgp_news/88"}
+n.broadcast(dict(_p), "Тарас Григорович")
+_store[:] = []
+n.check_edits("tgp_news", [dict(_p, text=TEXT_OLD + " Уточнення: рішення оскаржено в апеляції, "
+                            "засідання призначено на понеділок, сторони подали додаткові докази.")],
+              "Тарас Григорович")
+_it = _store[0] if _store else []
+check("суттєва правка пішла мосту одним пакетом", len(_store) == 1 and len(_it) == 1, str(_store)[:120])
+check("лише власниці: другий читач у міст не потрапляє", len(_it) == 1)
+check("номер підставний, не той, що міст уже бачив",
+      bool(_it) and _it[0]["message_id"] >= 10 ** 13)
+check("на початку позначка правки", bool(_it) and _it[0]["text"].startswith(config.MIRROR_EDIT_MARK))
+_shift = len(config.MIRROR_EDIT_MARK.encode("utf-16-le")) // 2
+check("розмітку зсунуто на довжину позначки", bool(_it) and _it[0]["entities"][0]["offset"] == _shift)
+_store[:] = []
+n.check_edits("tgp_news", [dict(_p, text=TEXT_OLD + " Уточнення: рішення оскаржено в апеляції, "
+                            "засідання призначено на понеділок, сторони подали додаткові докази!")],
+              "Тарас Григорович")
+check("дрібну правку мосту не несемо", not _store, str(_store)[:80])
+config.OWNER_ID = _m_owner
+n.api, n.mirror_store, n.mirror_on, n.time.sleep = _m_api, _m_store, _m_on, _m_sleep
 
 print("\n" + "═" * 62)
 print("  ПІДСУМОК: %s правильно, %s помилок" % (PASS, FAIL))

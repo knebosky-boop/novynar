@@ -102,6 +102,10 @@ def init_db():
         CREATE TABLE IF NOT EXISTS mirror (
             id INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT, ts INTEGER
         );
+        CREATE TABLE IF NOT EXISTS bare_held (
+            channel TEXT, post_id INTEGER, ts INTEGER,
+            PRIMARY KEY (channel, post_id)
+        );
         """)
 
 
@@ -458,7 +462,8 @@ def is_alert(text):
     # Сама назва зброї — сигналка лише в обривку без речення: «Новодонецьке -
     # Шахеди та Гербери». Аналітика про ту саму зброю пише реченнями з
     # крапками, тому назву рахуємо тільки там, де речення немає взагалі.
-    if not soft and is_fragment(text):
+    # Влучання в названий об'єкт — наслідок, а не рух цілі (03.10.2026).
+    if not soft and is_fragment(text) and not is_strike_report(text):
         soft = [m for m in getattr(config, "LIVE_ATTACK_NAMES", [])
                 if starts_word(low, m)]
     if soft and len(low) <= getattr(config, "LIVE_ATTACK_MAX_LEN", 400):
@@ -954,9 +959,73 @@ def is_statement(text):
     return False
 
 
+LETTERLESS = "без слів (лише емодзі чи картинка)"
+
+
+def is_letterless(text):
+    """Пост без жодного слова: «🤷‍♂» чи «+1710🐷» під картинкою.
+
+    Вказівка судді 03.10.2026 — різати. Картинка знімала поріг довжини, тож
+    такі пости йшли читачам (13 за 26.09–02.10, з них tgp_news/121030: канал
+    виклав «🤷‍♂» з фото, а текст дописав за 25 хв). Щоб дописаний пізніше текст
+    не пропадав, round_trip() запам'ятовує такий пост (bare_held) і відправляє
+    його, щойно під ним з'являться слова."""
+    if not getattr(config, "CUT_LETTERLESS", True):
+        return False
+    vis = visible(text)
+    # Пост із самого посилання на статтю (serhii_flash/7518 — інтерв'ю на
+    # «Суспільному») — не емодзі: читач відкриє статтю, лишаємо.
+    if re.search(r"https?://", vis):
+        return False
+    return len(re.findall(r"[^\W\d_]", vis)) < getattr(config, "LETTERLESS_MIN", 3)
+
+
+def is_stream_promo(text):
+    """Анонс власного стріму чи ефіру каналу (вказівка судді 03.10.2026 — різати).
+
+    zvizdecmanhustu/3621: «Напоминаю…: сегодня в 20:00 на YouTube 5-го канала
+    стрим… вживую отвечаем на вопросы». Слово «ефір» саме по собі — звичайна
+    новина («Армія TV тимчасово не виходить в ефір»), тому потрібна ще ознака
+    запрошення поруч («напоминаю», «вживую», «новий ефір») і короткий пост:
+    довгу аналітику з «детальніше — в новому ефірі» не чіпаємо."""
+    if bare_len(text) > getattr(config, "STREAM_MAX_LEN", 450):
+        return ""
+    vis = re.sub(r"\s+", " ", visible(text).lower())
+    near = getattr(config, "STREAM_NEAR", 150)
+    for w in re.finditer(getattr(config, "STREAM_WORD", r"$^"), vis):
+        okolo = vis[max(0, w.start() - near):w.end() + near]
+        for pat in getattr(config, "STREAM_INVITE", []):
+            m = re.search(pat, okolo)
+            if m:
+                return m.group(0)
+    return ""
+
+
+def is_strike_report(text):
+    """Влучання в названий об'єкт: «Нанесений удар по Північному мосту».
+
+    Знімає ТІЛЬКИ поріг CHANNEL_MIN_LENGTH, як і is_statement(). Вказівка судді
+    03.10.2026: удар по Північному мосту в Києві (smolii_ukraine/168826–168828,
+    34–68 знаків) зрізало як закоротке, і читачі його не отримали. Сигналку
+    («Бровари. Виліз шахед», «Збитий.») це не пропускає: потрібні разом слово
+    влучання і назва об'єкта. Оперативку далі ріже is_alert() на загальних
+    підставах."""
+    low = visible(text).lower()
+    hit = re.search(getattr(config, "STRIKE_HIT", r"$^"), low)
+    if not hit or re.search(getattr(config, "STRIKE_NOT", r"$^"), low):
+        return ""
+    obj = re.search(getattr(config, "STRIKE_OBJECT", r"$^"), low)
+    return "%s … %s" % (hit.group(0).strip(), obj.group(0).strip()) if obj else ""
+
+
 def passes_filters(text, has_media, channel=None):
     if is_service(text):
         return False, "службова позначка"
+    if is_letterless(text):
+        return False, LETTERLESS
+    stream = is_stream_promo(text)
+    if stream:
+        return False, "анонс стріму («%s»)" % stream
     hello = is_greeting(text)
     if hello:
         return False, "побажання («%s»)" % hello
@@ -973,7 +1042,8 @@ def passes_filters(text, has_media, channel=None):
     # Довжину міряємо по голому тексту: теги й емодзі в поріг не рахуються
     # (bare_len; до 11.09.2026 рахувались, і 34 знаки проходили за 40).
     floor = getattr(config, "CHANNEL_MIN_LENGTH", {}).get(channel or "")
-    if floor and bare_len(text) < floor and not is_statement(text):
+    if floor and bare_len(text) < floor and not is_statement(text) \
+            and not is_strike_report(text):
         return False, "закоротке для цього каналу"
     marker = is_alert(text)
     if marker:
@@ -1712,7 +1782,13 @@ def push_edit(row, post, title):
     body = ((post.get("text") or "") + (row["suffix"] or "")).strip()
     parts = split_messages(title, body, post["link"],
                            first_limit=int(row["first_limit"] or 4096))
-    big = edit_is_big(row["body"] or "", body) and getattr(config, "EDIT_NOTICE", True)
+    changed = edit_is_big(row["body"] or "", body)
+    big = changed and getattr(config, "EDIT_NOTICE", True)
+    # Міст у WhatsApp правити надіслане не вміє, а повтор того самого
+    # message_id сервер відкидає. Тому суттєву правку того, що пішло власниці,
+    # віддаємо дзеркалу НОВИМ повідомленням (вказівка судді 03.10.2026).
+    owner = getattr(config, "OWNER_ID", 0)
+    to_mirror = []
 
     by_user = {}
     for m in msgs:
@@ -1724,6 +1800,7 @@ def push_edit(row, post, title):
         # Правимо на місці лише тоді, коли частин рівно стільки ж:
         # інакше кінець новини лишиться від старої версії.
         fixed_in_place = len(parts) == len(mine)
+        edited = []
         if fixed_in_place:
             for m, chunk in zip(mine, parts):
                 if m["kind"] == "caption":
@@ -1737,7 +1814,10 @@ def push_edit(row, post, title):
                 if res is None:
                     fixed_in_place = False
                     break
+                edited.append(res)
                 time.sleep(0.3)
+        if fixed_in_place and changed and uid == owner and mirror_on():
+            to_mirror = mirror_edit_items(edited)
 
         if fixed_in_place:
             if big:
@@ -1757,14 +1837,51 @@ def push_edit(row, post, title):
                                    body, post["link"], first_limit=4096,
                                    force_header=True)
             for j, chunk in enumerate(again):
-                if api("sendMessage", chat_id=uid, text=chunk, parse_mode="HTML",
-                       disable_web_page_preview=True,
-                       reply_to_message_id=mine[0]["message_id"],
-                       allow_sending_without_reply=True):
+                res = api("sendMessage", chat_id=uid, text=chunk, parse_mode="HTML",
+                          disable_web_page_preview=True,
+                          reply_to_message_id=mine[0]["message_id"],
+                          allow_sending_without_reply=True)
+                if res:
                     done += 1 if j == 0 else 0
+                    if uid == owner and mirror_on() and isinstance(res, dict):
+                        to_mirror.append(res)   # нове повідомлення — новий message_id
                 time.sleep(0.4)
         time.sleep(config.SEND_DELAY)
+    if to_mirror:
+        try:
+            mirror_store(to_mirror)
+            log.info("дзеркало: правку %s/%s віддано мосту (%s повід.)",
+                     row["channel"], row["post_id"], len(to_mirror))
+        except Exception as e:
+            log.warning("дзеркало: правку не записав (%s)", e)
     return done > 0
+
+
+def mirror_edit_items(edited):
+    """Виправлену на місці новину — мосту як нове повідомлення з позначкою.
+
+    message_id підмінюємо: справжній сервер моста вже бачив і відкине як
+    повтор. Підставний номер — від часу в мілісекундах, з 10**13 угору, щоб
+    не перетнутись із номерами Telegram і з повторною правкою того самого
+    поста. Позначку дописуємо на початок, тож зсуваємо розмітку (offset
+    у Telegram рахується в UTF-16)."""
+    mark = getattr(config, "MIRROR_EDIT_MARK", "✏️ Канал виправив новину:\n")
+    shift = len(mark.encode("utf-16-le")) // 2
+    base = 10 ** 13 + int(time.time() * 1000) * 10
+    out = []
+    for i, res in enumerate(edited):
+        if not isinstance(res, dict):
+            continue
+        it = dict(res)
+        it["message_id"] = base + i
+        it["date"] = int(time.time())
+        if i == 0:
+            key = "caption" if "caption" in it or it.get("photo") or it.get("video") else "text"
+            ents = "caption_entities" if key == "caption" else "entities"
+            it[key] = mark + (it.get(key) or "")
+            it[ents] = [dict(e, offset=e["offset"] + shift) for e in it.get(ents) or []]
+        out.append(it)
+    return out
 
 
 def check_edits(channel, posts, title=""):
@@ -2022,7 +2139,8 @@ def round_trip():
             log.warning("перевірка виправлень у %s зірвалась: %s", ch, e)
 
         fresh = [p for p in posts if p["id"] > (src["last_id"] or 0)]
-        if not fresh:
+        revived = revive_bare(ch, posts) if src["last_id"] else []
+        if not fresh and not revived:
             continue
 
         if not src["last_id"]:          # перше знайомство — історію не шлемо
@@ -2037,10 +2155,12 @@ def round_trip():
                      title, len(fresh), config.MAX_PER_ROUND)
             fresh = fresh[-config.MAX_PER_ROUND:]
 
-        for post in fresh:
+        for post in revived + fresh:
             ok, why = passes_filters(post["text"], bool(post["photo"] or post["video"]), ch)
             if not ok:
                 log.info("пропуск %s/%s: %s", ch, post["id"], why)
+                if why == LETTERLESS:
+                    hold_bare(ch, post["id"])
                 continue
             n = norm(post["text"])
             key = ("t:" + hashlib.sha1(n[:300].encode("utf-8")).hexdigest()
@@ -2063,9 +2183,42 @@ def round_trip():
                 broadcast(post, title)
                 remember(ch, post["text"])
 
-        with db() as c:
-            c.execute("UPDATE sources SET last_id = ? WHERE channel = ?",
-                      (max(p["id"] for p in fresh), ch))
+        # Лише за новими: повернутий пост старший за позицію, і max() по ньому
+        # відкотив би її назад — уся історія пішла б удруге.
+        if fresh:
+            with db() as c:
+                c.execute("UPDATE sources SET last_id = ? WHERE channel = ?",
+                          (max(p["id"] for p in fresh), ch))
+
+
+def hold_bare(channel, post_id):
+    """Запам'ятати пост без слів: канал часто дописує текст за кілька хвилин."""
+    with db() as c:
+        c.execute("INSERT OR IGNORE INTO bare_held (channel, post_id, ts) VALUES (?, ?, ?)",
+                  (channel, post_id, int(time.time())))
+
+
+def revive_bare(channel, posts):
+    """Пости без слів (is_letterless), під якими канал уже дописав текст.
+
+    03.10.2026, tgp_news/121030: «🤷‍♂» з фото о 20:29, текст про дефіцит
+    бюджету — о 20:54. Повертаємо такий пост у звичайний конвеєр: фільтри,
+    дедуп і відправку він проходить як новий. Стежимо BARE_HOLD_HOURS."""
+    hours = getattr(config, "BARE_HOLD_HOURS", 3)
+    with db() as c:
+        c.execute("DELETE FROM bare_held WHERE ts < ?", (int(time.time()) - hours * 3600,))
+        held = {r["post_id"] for r in
+                c.execute("SELECT post_id FROM bare_held WHERE channel = ?", (channel,))}
+    out = []
+    for p in posts:
+        if p["id"] in held and not is_letterless(p["text"]):
+            with db() as c:
+                c.execute("DELETE FROM bare_held WHERE channel = ? AND post_id = ?",
+                          (channel, p["id"]))
+            log.info("%s/%s: під постом без слів з'явився текст — перевіряю як новий",
+                     channel, p["id"])
+            out.append(p)
+    return out
 
 
 def maybe_remind():
