@@ -2431,6 +2431,63 @@ check("дрібну правку мосту не несемо", not _store, str(
 config.OWNER_ID = _m_owner
 n.api, n.mirror_store, n.mirror_on, n.time.sleep = _m_api, _m_store, _m_on, _m_sleep
 
+block("04.10.2026 — правка в WhatsApp лише з новим текстом")
+# Живі пости: ShrikeNews/33041 (дописали речення — несемо; стерли його — відкат, мовчимо)
+# і ShrikeNews/33034 (переформулювали речення, переставили абзац — тричі пішов Миколі).
+fresh_db()
+_w_api, _w_store, _w_on, _w_sleep = n.api, n.mirror_store, n.mirror_on, n.time.sleep
+_w_owner = getattr(config, "OWNER_ID", 0)
+config.OWNER_ID = 1
+_wst, _wmid = [], [700]
+def _api_w(method, **kw):
+    if method.startswith("send"):
+        _wmid[0] += 1
+        return {"message_id": _wmid[0], "text": kw.get("text", "")}
+    if method == "editMessageText":
+        return {"message_id": kw["message_id"], "date": 1, "text": kw.get("text", "")}
+    return {"ok": True}
+n.api, n.mirror_on, n.time.sleep = _api_w, (lambda: True), (lambda _s: None)
+n.mirror_store = lambda msgs: _wst.append(msgs)
+with n.db() as c:
+    c.execute("INSERT INTO people VALUES (1,'kate',1,1)")
+H41 = ('<b>Краснодарский край. Аэродром "Ханская"🔥</b>\n\nМало что понятно, но, если не ошибаюсь, '
+       'жужжалка на видео, которую сопровождают радостные крики местных жителей - это дрон '
+       '<a href="https://t.me/ShrikeNews/32742">MICH</a>.')
+H41_DOP = H41 + "\n\nПохоже, СБУ его использует для атак на аэродромы."
+_p41 = {"channel": "ShrikeNews", "id": 33041, "text": H41, "photo": None, "video": False,
+        "link": "https://t.me/ShrikeNews/33041"}
+n.broadcast(dict(_p41), "Шрайк")
+_wst[:] = []
+n.check_edits("ShrikeNews", [dict(_p41, text=H41_DOP)], "Шрайк")
+check("33041: дописали речення — мосту несемо", len(_wst) == 1, str(_wst)[:80])
+_wst[:] = []
+n.check_edits("ShrikeNews", [dict(_p41, text=H41)], "Шрайк")
+check("33041: стерли дописане (відкат до першого тексту) — мовчимо", not _wst, str(_wst)[:80])
+
+H34_A = ('<b>Вот еще показательный график от Быть Или - тут сравнивается продвижение армии РФ в 2025 и 2026 годах.</b>\n\n'
+         'В январе-апреле разница была не особенно большой, а <b>с мая картина кардинально меняется</b> - продвижение "скукоживается".\n\n'
+         'То есть можем считать май 2026 переломным.\n\n'
+         'И это еще циферки, которые Дипы давали с соблюдением "тишины". Как мы теперь знаем, в реальности в мае-июле СОУ освободили больше, чем потеряли.')
+H34_B = H34_A.replace('с соблюдением "тишины". Как мы теперь знаем, в реальности', 'при соблюдении "тишины". В реальности')
+_parts = H34_B.split("\n\n")
+H34_C = "\n\n".join([_parts[0], _parts[1], _parts[3], _parts[2]])
+_p34 = {"channel": "ShrikeNews", "id": 33034, "text": H34_A, "photo": None, "video": False,
+        "link": "https://t.me/ShrikeNews/33034"}
+n.broadcast(dict(_p34), "Шрайк")
+_wst[:] = []
+n.check_edits("ShrikeNews", [dict(_p34, text=H34_B)], "Шрайк")
+check("33034: переформульоване речення — мовчимо", not _wst, str(_wst)[:80])
+n.check_edits("ShrikeNews", [dict(_p34, text=H34_C)], "Шрайк")
+check("33034: переставлений абзац — мовчимо", not _wst, str(_wst)[:80])
+n.check_edits("ShrikeNews", [dict(_p34, text=H34_A)], "Шрайк")
+check("33034: повернули перший текст — мовчимо (звірка з тим, що бачив міст)", not _wst, str(_wst)[:80])
+n.check_edits("ShrikeNews", [dict(_p34, text=H34_A.replace("в 2025 и 2026", "в 2024 и 2026"))], "Шрайк")
+check("нове число в правці — несемо навіть одним словом", len(_wst) == 1, str(_wst)[:80])
+check("edit_adds_news: те саме іншими словами порядком — ні",
+      not n.edit_adds_news(["Обстріл Харкова, троє поранених."], "Троє поранених, обстріл Харкова!"))
+config.OWNER_ID = _w_owner
+n.api, n.mirror_store, n.mirror_on, n.time.sleep = _w_api, _w_store, _w_on, _w_sleep
+
 block("03.10.2026 (вечір) — меню DeepState, «букмекер» і «казино» в новині")
 # ShrikeNews/33030 = tgp_news/121058: аналітика DeepState різалась через кнопку
 # «Підтримати нас» → buymeacoffee у меню-підвалі (два рядки: порожнє посилання + меню).

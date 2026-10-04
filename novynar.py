@@ -106,6 +106,9 @@ def init_db():
             channel TEXT, post_id INTEGER, ts INTEGER,
             PRIMARY KEY (channel, post_id)
         );
+        CREATE TABLE IF NOT EXISTS mirror_ver (
+            channel TEXT, post_id INTEGER, body TEXT, ts INTEGER
+        );
         """)
 
 
@@ -1820,6 +1823,52 @@ def edit_is_big(old, new):
     return ratio < getattr(config, "EDIT_NOTE_RATIO", 0.97)
 
 
+def edit_adds_news(versions, new):
+    """Чи є в правці щось, чого міст іще не віддавав.
+
+    У WhatsApp правка — це весь пост наново, тому мірка тут інша, ніж
+    у edit_is_big: рахуємо лише слова, яких не було в ЖОДНІЙ уже відданій
+    мосту версії. 04.10.2026 ShrikeNews/33034 пішов Миколі тричі
+    (переформульоване речення, переставлений абзац), а 33041 удруге —
+    канал стер дописане речення, і пішов дослівно перший текст. Нове число
+    («загинули 3» → «5») несемо завжди: це саме те виправлення, заради
+    якого правку й варто нести."""
+    seen = set()
+    for v in versions:
+        seen.update(plain(v).split())
+    fresh = [w for w in plain(new).split() if w not in seen]
+    if any(ch.isdigit() for w in fresh for ch in w):
+        return True
+    return sum(len(w) + 1 for w in fresh) >= getattr(config, "MIRROR_EDIT_NEW_CHARS", 30)
+
+
+def mirror_versions(row):
+    """Усі версії поста, що вже пішли мосту: перша — та, що пішла новиною."""
+    with db() as c:
+        c.execute("CREATE TABLE IF NOT EXISTS mirror_ver "
+                  "(channel TEXT, post_id INTEGER, body TEXT, ts INTEGER)")
+        got = [r["body"] for r in c.execute(
+            "SELECT body FROM mirror_ver WHERE channel = ? AND post_id = ? ORDER BY ts",
+            (row["channel"], row["post_id"]))]
+    return got or [row["body"] or ""]
+
+
+def mirror_remember(row, versions, body=None):
+    """Записуємо, що вже має міст. Без body — лише першу версію: правку не
+    понесли, а sent.body зараз перепишеться на неї, і без цього запису
+    наступна правка звірялась би не з тим, що Микола бачив."""
+    now = int(time.time())
+    with db() as c:
+        if not c.execute("SELECT 1 FROM mirror_ver WHERE channel = ? AND post_id = ?",
+                         (row["channel"], row["post_id"])).fetchone():
+            for v in versions:
+                c.execute("INSERT INTO mirror_ver VALUES (?,?,?,?)",
+                          (row["channel"], row["post_id"], v, now))
+        if body is not None:
+            c.execute("INSERT INTO mirror_ver VALUES (?,?,?,?)",
+                      (row["channel"], row["post_id"], body, now))
+
+
 def push_edit(row, post, title):
     """Доводимо виправлення до тих, кому новина вже пішла."""
     with db() as c:
@@ -1839,6 +1888,15 @@ def push_edit(row, post, title):
     # віддаємо дзеркалу НОВИМ повідомленням (вказівка судді 03.10.2026).
     owner = getattr(config, "OWNER_ID", 0)
     to_mirror = []
+    # Тут не edit_is_big: виправлене число («3» → «5») для неї дрібниця за
+    # обсягом, а Миколі без нього лишиться хибна цифра.
+    versions = (mirror_versions(row)
+                if mirror_on() and plain(row["body"] or "") != plain(body) else [])
+    mirror_ok = bool(versions) and edit_adds_news(versions, body)
+    if versions and not mirror_ok:
+        log.info("дзеркало: правку %s/%s не несемо — нового тексту немає",
+                 row["channel"], row["post_id"])
+        mirror_remember(row, versions)
 
     by_user = {}
     for m in msgs:
@@ -1866,7 +1924,7 @@ def push_edit(row, post, title):
                     break
                 edited.append(res)
                 time.sleep(0.3)
-        if fixed_in_place and changed and uid == owner and mirror_on():
+        if fixed_in_place and mirror_ok and uid == owner:
             to_mirror = mirror_edit_items(edited)
 
         if fixed_in_place:
@@ -1893,13 +1951,14 @@ def push_edit(row, post, title):
                           allow_sending_without_reply=True)
                 if res:
                     done += 1 if j == 0 else 0
-                    if uid == owner and mirror_on() and isinstance(res, dict):
+                    if uid == owner and mirror_ok and isinstance(res, dict):
                         to_mirror.append(res)   # нове повідомлення — новий message_id
                 time.sleep(0.4)
         time.sleep(config.SEND_DELAY)
     if to_mirror:
         try:
             mirror_store(to_mirror)
+            mirror_remember(row, versions, body)
             log.info("дзеркало: правку %s/%s віддано мосту (%s повід.)",
                      row["channel"], row["post_id"], len(to_mirror))
         except Exception as e:
@@ -1945,6 +2004,9 @@ def check_edits(channel, posts, title=""):
                   "WHERE s.channel = sent_msg.channel AND s.post_id = sent_msg.post_id "
                   "AND s.ts < ?)", (now - hours * 3600,))
         c.execute("DELETE FROM sent WHERE ts < ?", (now - hours * 3600,))
+        c.execute("CREATE TABLE IF NOT EXISTS mirror_ver "
+                  "(channel TEXT, post_id INTEGER, body TEXT, ts INTEGER)")
+        c.execute("DELETE FROM mirror_ver WHERE ts < ?", (now - hours * 3600,))
         watched = {r["post_id"]: dict(r) for r in
                    c.execute("SELECT * FROM sent WHERE channel = ?", (channel,))}
     if not watched:
