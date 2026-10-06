@@ -109,6 +109,10 @@ def init_db():
         CREATE TABLE IF NOT EXISTS mirror_ver (
             channel TEXT, post_id INTEGER, body TEXT, ts INTEGER
         );
+        CREATE TABLE IF NOT EXISTS mirror_wait (
+            channel TEXT, post_id INTEGER, items TEXT, body TEXT, ts INTEGER,
+            PRIMARY KEY (channel, post_id)
+        );
         """)
 
 
@@ -1651,6 +1655,10 @@ MIRROR = []
 MIRROR_UID = None
 MIRROR_KEEP_HOURS = 48
 MIRROR_MAX_FILE = 20_000_000     # getFile Bot API більше не віддає
+# Відкладені до тиші правки (mirror_hold): таблиця є й у init_db, а тут — для
+# старої бази, яку sukho.py та перевірки відкривають без init_db.
+MIRROR_WAIT_SQL = ("CREATE TABLE IF NOT EXISTS mirror_wait (channel TEXT, post_id INTEGER, "
+                   "items TEXT, body TEXT, ts INTEGER, PRIMARY KEY (channel, post_id))")
 
 
 def mirror_on():
@@ -1869,6 +1877,86 @@ def mirror_remember(row, versions, body=None):
                       (row["channel"], row["post_id"], body, now))
 
 
+def mirror_hold(row, versions, body, msgs, fresh=False):
+    """Правку мосту не віддаємо одразу, а відкладаємо до тиші.
+
+    Автор часто дописує пост шматками, і кожен шматок ішов Миколі всім
+    постом наново: 04.10.2026 ShrikeNews/33054 — п'ять разів за годину,
+    06.10 ShrikeNews/33088 — тричі за сім хвилин. Тепер кожна правка лише
+    оновлює відкладене, а мосту йде одна, остання версія, коли пост
+    MIRROR_EDIT_QUIET_MIN хвилин не мінявся (mirror_release; вказівка судді
+    06.10.2026). Чи нести, вирішуємо там само, по останній версії: відкат
+    до того, що Микола вже бачив, так і лишиться мовчки.
+
+    msgs — повідомлення власниці з цією версією: виправлені на місці
+    (номер підмінить mirror_edit_items) або, якщо fresh, надіслані наново."""
+    import json
+    mirror_remember(row, versions)      # що має міст — поки sent.body не переписали
+    now = int(time.time())
+    with db() as c:
+        c.execute(MIRROR_WAIT_SQL)
+        if msgs:
+            c.execute("INSERT OR REPLACE INTO mirror_wait (channel, post_id, items, body, ts) "
+                      "VALUES (?,?,?,?,?)",
+                      (row["channel"], row["post_id"],
+                       json.dumps({"fresh": bool(fresh), "msgs": msgs}, ensure_ascii=False),
+                       body, now))
+            held = True
+        else:
+            # Власниці цю версію не віддали (на місці не лягла, а дрібна) —
+            # нести нема чого, але пост досі міняється: тишу рахуємо заново.
+            held = c.execute("UPDATE mirror_wait SET ts = ? WHERE channel = ? AND post_id = ?",
+                             (now, row["channel"], row["post_id"])).rowcount > 0
+    if held:
+        log.info("дзеркало: правку %s/%s відклав до тиші (%s хв)", row["channel"],
+                 row["post_id"], getattr(config, "MIRROR_EDIT_QUIET_MIN", 60))
+
+
+def mirror_release(now=None):
+    """Відлежані правки — мосту, коли пост MIRROR_EDIT_QUIET_MIN хвилин не мінявся.
+
+    Несемо лише останню версію і лише тоді, коли в ній є нове проти всього,
+    що міст уже віддав (edit_adds_news). Відкладене лежить у базі, тож
+    переживає кінець зміни на GitHub і доїжджає наступною. Пауза власниці
+    (/pause) тримає й правки."""
+    if paused or not mirror_on():
+        return 0
+    import json
+    now = int(time.time() if now is None else now)
+    quiet = int(getattr(config, "MIRROR_EDIT_QUIET_MIN", 60)) * 60
+    with db() as c:
+        c.execute(MIRROR_WAIT_SQL)
+        # Бот стояв добу — стару правку вже не несемо, як і check_edits по EDIT_HOURS.
+        c.execute("DELETE FROM mirror_wait WHERE ts < ?",
+                  (now - int(getattr(config, "EDIT_HOURS", 24)) * 3600,))
+        ripe = [dict(r) for r in c.execute(
+            "SELECT * FROM mirror_wait WHERE ts <= ? ORDER BY ts", (now - quiet,))]
+    gone = 0
+    for w in ripe:
+        ch, pid = w["channel"], w["post_id"]
+        with db() as c:
+            c.execute("DELETE FROM mirror_wait WHERE channel = ? AND post_id = ?", (ch, pid))
+            have = [r["body"] for r in c.execute(
+                "SELECT body FROM mirror_ver WHERE channel = ? AND post_id = ? ORDER BY ts",
+                (ch, pid))]
+        if not have:
+            log.info("дзеркало: правку %s/%s не несемо — версії моста вже стерто", ch, pid)
+            continue
+        if not edit_adds_news(have, w["body"]):
+            log.info("дзеркало: правку %s/%s не несемо — нового тексту немає", ch, pid)
+            continue
+        got = json.loads(w["items"])
+        msgs = got["msgs"] if got.get("fresh") else mirror_edit_items(got["msgs"])
+        try:
+            mirror_store(msgs)
+            mirror_remember({"channel": ch, "post_id": pid}, have, w["body"])
+            gone += 1
+            log.info("дзеркало: правку %s/%s віддано мосту (%s повід.)", ch, pid, len(msgs))
+        except Exception as e:
+            log.warning("дзеркало: правку не записав (%s)", e)
+    return gone
+
+
 def push_edit(row, post, title):
     """Доводимо виправлення до тих, кому новина вже пішла."""
     with db() as c:
@@ -1885,18 +1973,15 @@ def push_edit(row, post, title):
     big = changed and getattr(config, "EDIT_NOTICE", True)
     # Міст у WhatsApp правити надіслане не вміє, а повтор того самого
     # message_id сервер відкидає. Тому суттєву правку того, що пішло власниці,
-    # віддаємо дзеркалу НОВИМ повідомленням (вказівка судді 03.10.2026).
+    # віддаємо дзеркалу НОВИМ повідомленням (вказівка судді 03.10.2026) —
+    # не одразу, а одну, останню, коли пост годину не мінявся (06.10.2026):
+    # тут лише mirror_hold, несе mirror_release.
     owner = getattr(config, "OWNER_ID", 0)
-    to_mirror = []
+    to_mirror, fresh = [], False
     # Тут не edit_is_big: виправлене число («3» → «5») для неї дрібниця за
     # обсягом, а Миколі без нього лишиться хибна цифра.
     versions = (mirror_versions(row)
                 if mirror_on() and plain(row["body"] or "") != plain(body) else [])
-    mirror_ok = bool(versions) and edit_adds_news(versions, body)
-    if versions and not mirror_ok:
-        log.info("дзеркало: правку %s/%s не несемо — нового тексту немає",
-                 row["channel"], row["post_id"])
-        mirror_remember(row, versions)
 
     by_user = {}
     for m in msgs:
@@ -1924,8 +2009,8 @@ def push_edit(row, post, title):
                     break
                 edited.append(res)
                 time.sleep(0.3)
-        if fixed_in_place and mirror_ok and uid == owner:
-            to_mirror = mirror_edit_items(edited)
+        if fixed_in_place and versions and uid == owner:
+            to_mirror = list(edited)
 
         if fixed_in_place:
             if big:
@@ -1951,18 +2036,16 @@ def push_edit(row, post, title):
                           allow_sending_without_reply=True)
                 if res:
                     done += 1 if j == 0 else 0
-                    if uid == owner and mirror_ok and isinstance(res, dict):
+                    if uid == owner and versions and isinstance(res, dict):
                         to_mirror.append(res)   # нове повідомлення — новий message_id
+                        fresh = True
                 time.sleep(0.4)
         time.sleep(config.SEND_DELAY)
-    if to_mirror:
+    if versions:
         try:
-            mirror_store(to_mirror)
-            mirror_remember(row, versions, body)
-            log.info("дзеркало: правку %s/%s віддано мосту (%s повід.)",
-                     row["channel"], row["post_id"], len(to_mirror))
+            mirror_hold(row, versions, body, to_mirror, fresh)
         except Exception as e:
-            log.warning("дзеркало: правку не записав (%s)", e)
+            log.warning("дзеркало: правку не відклав (%s)", e)
     return done > 0
 
 
@@ -2394,6 +2477,10 @@ def watcher():
         try:
             with _lock:
                 round_trip()
+                try:
+                    mirror_release()
+                except Exception as e:
+                    log.warning("дзеркало: відкладені правки — %s", e)
                 if config.HOLD_MINUTES:
                     release_ready()
                 maybe_remind()
@@ -2698,6 +2785,10 @@ def once():
     if stale:
         log.info("пропущено застарілих команд: %s", stale)
     round_trip()
+    try:
+        mirror_release()
+    except Exception as e:
+        log.warning("дзеркало: відкладені правки — %s", e)
     try:
         mirror_push()
     except Exception as e:

@@ -2384,7 +2384,12 @@ n.round_trip()
 check("вже повернутий пост удруге не йде", _bc == [13], str(_bc))
 n.api, n.fetch_channel, n.broadcast, n.remember, n.sources = _r_api, _r_fetch, _r_bc, _r_rem, _r_src
 
-# 5) Суттєва правка того, що пішло власниці, — мосту новим повідомленням.
+def _tysha():
+    """Відлежати годину тиші й віддати відкладене: з 06.10.2026 правку мосту несемо не одразу."""
+    return n.mirror_release(now=time.time() + config.MIRROR_EDIT_QUIET_MIN * 60 + 1)
+
+
+# 5) Суттєва правка того, що пішло власниці, — мосту новим повідомленням (після тиші).
 fresh_db()
 _m_api, _m_store, _m_on, _m_sleep = n.api, n.mirror_store, n.mirror_on, n.time.sleep
 _m_owner = getattr(config, "OWNER_ID", 0)
@@ -2415,6 +2420,8 @@ _store[:] = []
 n.check_edits("tgp_news", [dict(_p, text=TEXT_OLD + " Уточнення: рішення оскаржено в апеляції, "
                             "засідання призначено на понеділок, сторони подали додаткові докази.")],
               "Тарас Григорович")
+check("правку відкладено: до години тиші мосту нічого", not _store, str(_store)[:80])
+_tysha()
 _it = _store[0] if _store else []
 check("суттєва правка пішла мосту одним пакетом", len(_store) == 1 and len(_it) == 1, str(_store)[:120])
 check("лише власниці: другий читач у міст не потрапляє", len(_it) == 1)
@@ -2427,6 +2434,7 @@ _store[:] = []
 n.check_edits("tgp_news", [dict(_p, text=TEXT_OLD + " Уточнення: рішення оскаржено в апеляції, "
                             "засідання призначено на понеділок, сторони подали додаткові докази!")],
               "Тарас Григорович")
+_tysha()
 check("дрібну правку мосту не несемо", not _store, str(_store)[:80])
 config.OWNER_ID = _m_owner
 n.api, n.mirror_store, n.mirror_on, n.time.sleep = _m_api, _m_store, _m_on, _m_sleep
@@ -2459,9 +2467,11 @@ _p41 = {"channel": "ShrikeNews", "id": 33041, "text": H41, "photo": None, "video
 n.broadcast(dict(_p41), "Шрайк")
 _wst[:] = []
 n.check_edits("ShrikeNews", [dict(_p41, text=H41_DOP)], "Шрайк")
+_tysha()
 check("33041: дописали речення — мосту несемо", len(_wst) == 1, str(_wst)[:80])
 _wst[:] = []
 n.check_edits("ShrikeNews", [dict(_p41, text=H41)], "Шрайк")
+_tysha()
 check("33041: стерли дописане (відкат до першого тексту) — мовчимо", not _wst, str(_wst)[:80])
 
 H34_A = ('<b>Вот еще показательный график от Быть Или - тут сравнивается продвижение армии РФ в 2025 и 2026 годах.</b>\n\n'
@@ -2476,17 +2486,183 @@ _p34 = {"channel": "ShrikeNews", "id": 33034, "text": H34_A, "photo": None, "vid
 n.broadcast(dict(_p34), "Шрайк")
 _wst[:] = []
 n.check_edits("ShrikeNews", [dict(_p34, text=H34_B)], "Шрайк")
+_tysha()
 check("33034: переформульоване речення — мовчимо", not _wst, str(_wst)[:80])
 n.check_edits("ShrikeNews", [dict(_p34, text=H34_C)], "Шрайк")
+_tysha()
 check("33034: переставлений абзац — мовчимо", not _wst, str(_wst)[:80])
 n.check_edits("ShrikeNews", [dict(_p34, text=H34_A)], "Шрайк")
+_tysha()
 check("33034: повернули перший текст — мовчимо (звірка з тим, що бачив міст)", not _wst, str(_wst)[:80])
 n.check_edits("ShrikeNews", [dict(_p34, text=H34_A.replace("в 2025 и 2026", "в 2024 и 2026"))], "Шрайк")
+_tysha()
 check("нове число в правці — несемо навіть одним словом", len(_wst) == 1, str(_wst)[:80])
 check("edit_adds_news: те саме іншими словами порядком — ні",
       not n.edit_adds_news(["Обстріл Харкова, троє поранених."], "Троє поранених, обстріл Харкова!"))
 config.OWNER_ID = _w_owner
 n.api, n.mirror_store, n.mirror_on, n.time.sleep = _w_api, _w_store, _w_on, _w_sleep
+
+block("06.10.2026 — правка в WhatsApp: одна, остання, після години тиші")
+# Живий пост ShrikeNews/33054 (04.10.2026): автор дописував його шматками, і Миколі
+# він пішов п'ять разів за годину (17:23 новиною, правки 17:32, 18:03, 18:05, 18:23).
+# Тексти — з архіву моста, без розмітки WhatsApp.
+fresh_db()
+_h_api, _h_store, _h_on, _h_sleep, _h_time = n.api, n.mirror_store, n.mirror_on, n.time.sleep, n.time.time
+_h_owner, _h_quiet, _h_notice = getattr(config, "OWNER_ID", 0), config.MIRROR_EDIT_QUIET_MIN, config.EDIT_NOTICE
+config.OWNER_ID = 1
+_hst, _hcalls, _hmid, _clk = [], [], [900], [1_790_000_000.0]
+def _api_h(method, **kw):
+    _hcalls.append(method)
+    if method.startswith("send"):
+        _hmid[0] += 1
+        return {"message_id": _hmid[0], "date": 1, "text": kw.get("text", "")}
+    if method == "editMessageText":
+        return {"message_id": kw["message_id"], "date": 1, "text": kw.get("text", "")}
+    return {"ok": True}
+n.api, n.mirror_on, n.time.sleep = _api_h, (lambda: True), (lambda _s: None)
+n.time.time = lambda: _clk[0]
+n.mirror_store = lambda msgs: _hst.append(msgs)
+n.paused = False
+with n.db() as c:
+    c.execute("INSERT INTO people VALUES (1,'kate',1,1)")
+def _wait():
+    with n.db() as c:
+        return c.execute("SELECT COUNT(*) FROM mirror_wait").fetchone()[0]
+def _post(pid, text):
+    return {"channel": "ShrikeNews", "id": pid, "text": text, "photo": None, "video": False,
+            "link": "https://t.me/ShrikeNews/%s" % pid}
+S54 = [
+    "Неожиданно. Но интересно.\n\nТам дальше Зеленский сказал, что Германия финансирует производство 2 тысяч «Барсов». "
+    "Но неясно, это за какой-то период или вообще.\n\nНапомню, что производитель этих дронов утверждал, что производится 2 тысячи в месяц.",
+    "Неожиданно. Но интересно - дальнобойные реактивные дроны против дальнобойных реактивных дронов.\n\nТам еще Зеленский сказал, "
+    "что Германия финансирует производство 2 тысяч «Барсов». Но неясно, это за какой-то период или вообще.\n\nНапомню, что "
+    "производитель этих дронов утверждает (https://t.me/ShrikeNews/32712), что производится 2 тысячи в месяц.",
+    "Неожиданно. Но интересно - дальнобойные реактивные дроны против дальнобойных реактивных дронов.\n\nТам еще Зеленский сказал, "
+    "что «Барсы» показывают сбития 30% сбития.\n\nА также, что Германия финансирует производство 2 тысяч «Барсов». Но неясно, "
+    "это за какой-то период или вообще.\n\nНапомню, что производитель этих дронов утверждает (https://t.me/ShrikeNews/32712), "
+    "что производится 2 тысячи в месяц.",
+    "Неожиданно. Но интересно - дальнобойные реактивные дроны против дальнобойных реактивных дронов.\n\nТам еще Зеленский сказал, "
+    "что «Барсы» показывают 30% сбития. Вероятно, имеется в виду эффективность сбития, а не доля этих дронов в общей массе.\n\n"
+    "Также сказал, что Германия финансирует производство 2 тысяч «Барсов». Но неясно, это за какой-то период или вообще.\n\n"
+    "Напомню, что производитель этих дронов утверждает (https://t.me/ShrikeNews/32712), что изготавливает 2 тысячи в месяц.",
+    "Неожиданно. Но интересно - дальнобойные реактивные дроны против дальнобойных реактивных дронов.\n\nЕще Зеленский сказал, "
+    "что «Барсы» показывают 30% сбития, и этот процент растет. Вероятно, имеется в виду эффективность сбития.\n\nТакже добавил, "
+    "что Германия финансирует производство 2 тысяч «Барсов». Но неясно, это за какой-то период или вообще.\n\nНапомню, что "
+    "производитель этих дронов утверждает (https://t.me/ShrikeNews/32712), что изготавливает 2 тысячи в месяц.",
+]
+T0 = 1_790_000_000.0
+n.broadcast(_post(33054, S54[0]), "Шрайк")
+_hst[:], _hcalls[:] = [], []
+for _min, _txt in [(9, S54[1]), (40, S54[2]), (42, S54[3]), (60, S54[4])]:
+    _clk[0] = T0 + _min * 60
+    n.check_edits("ShrikeNews", [_post(33054, _txt)], "Шрайк")
+    n.mirror_release()                      # як once(): після кожного обходу
+check("33054: чотири правки за годину — мосту поки нічого", not _hst, str(_hst)[:80])
+check("власниці в Telegram правка лягає одразу, на місці", _hcalls.count("editMessageText") == 4, str(_hcalls))
+check("відкладена правка лежить у базі (переживе кінець зміни)", _wait() == 1, str(_wait()))
+_clk[0] = T0 + (60 + 59) * 60
+n.mirror_release()
+check("годину тиші рахуємо від ОСТАННЬОЇ правки, не від першої", not _hst, str(_hst)[:80])
+_clk[0] = T0 + (60 + 60) * 60
+n.mirror_release()
+_it = _hst[0] if _hst else []
+check("33054: після години тиші — один повтор замість чотирьох", len(_hst) == 1 and len(_it) == 1, str(_hst)[:80])
+check("пішла остання версія", bool(_it) and "этот процент растет" in _it[0]["text"], (_it[0]["text"][-60:] if _it else ""))
+check("з позначкою правки й підставним номером", bool(_it) and _it[0]["text"].startswith(config.MIRROR_EDIT_MARK)
+      and _it[0]["message_id"] >= 10 ** 13)
+n.mirror_release()
+check("віддане вдруге не йде, відкладених не лишилось", len(_hst) == 1 and _wait() == 0)
+_clk[0] += 600
+n.check_edits("ShrikeNews", [_post(33054, S54[4].replace("и этот процент растет", "и этот процент растёт"))], "Шрайк")
+_clk[0] += 3601
+n.mirror_release()
+check("після відданої — дрібниця (е → ё) мосту не йде", len(_hst) == 1, str(len(_hst)))
+
+# Дописали й за годину стерли (як 33041) — Миколі нічого.
+_hst[:] = []
+_clk[0] = T0 + 10 * 3600
+n.broadcast(_post(33041, H41), "Шрайк")
+_hst[:] = []
+_clk[0] += 300
+n.check_edits("ShrikeNews", [_post(33041, H41_DOP)], "Шрайк")
+n.mirror_release()
+_clk[0] += 1200
+n.check_edits("ShrikeNews", [_post(33041, H41)], "Шрайк")
+n.mirror_release()
+_clk[0] += 3601
+n.mirror_release()
+check("дописали й за годину стерли — Миколі нічого", not _hst and _wait() == 0, str(_hst)[:80])
+
+# Пауза власниці тримає й правки; знята — відкладене йде.
+_clk[0] = T0 + 20 * 3600
+n.broadcast(_post(33088, S54[0]), "Шрайк")
+_hst[:] = []
+_clk[0] += 60
+n.check_edits("ShrikeNews", [_post(33088, S54[4])], "Шрайк")
+n.paused = True
+_clk[0] += 3601
+n.mirror_release()
+check("пауза власниці (/pause) тримає й правки", not _hst and _wait() == 1, str(_hst)[:80])
+n.paused = False
+n.mirror_release()
+check("пауза знята — відкладене пішло", len(_hst) == 1, str(len(_hst)))
+
+# Бот стояв понад EDIT_HOURS — стару правку вже не несемо.
+_hst[:] = []
+_clk[0] = T0 + 30 * 3600
+n.broadcast(_post(33089, S54[0]), "Шрайк")
+_hst[:] = []
+_clk[0] += 60
+n.check_edits("ShrikeNews", [_post(33089, S54[4])], "Шрайк")
+_clk[0] += (config.EDIT_HOURS + 1) * 3600
+n.mirror_release()
+check("бот стояв понад EDIT_HOURS — стару правку не несемо", not _hst and _wait() == 0, str(_hst)[:80])
+
+# 0 хвилин — як до 06.10.2026: несемо в тому самому обході.
+config.MIRROR_EDIT_QUIET_MIN = 0
+_hst[:] = []
+_clk[0] = T0 + 60 * 3600
+n.broadcast(_post(33090, S54[0]), "Шрайк")
+_hst[:] = []
+_clk[0] += 60
+n.check_edits("ShrikeNews", [_post(33090, S54[4])], "Шрайк")
+n.mirror_release()
+check("MIRROR_EDIT_QUIET_MIN = 0 — несемо в тому самому обході", len(_hst) == 1, str(len(_hst)))
+config.MIRROR_EDIT_QUIET_MIN = _h_quiet
+
+# Правка не лягла на місце (стало більше частин) — мосту йдуть нові повідомлення
+# власниці з їхніми справжніми номерами, теж одним разом після тиші.
+config.EDIT_NOTICE = True
+_hst[:] = []
+_clk[0] = T0 + 70 * 3600
+n.broadcast(_post(33091, S54[0]), "Шрайк")
+_hst[:] = []
+_long = "\n\n".join([S54[4]] * 10)
+_clk[0] += 60
+n.check_edits("ShrikeNews", [_post(33091, _long)], "Шрайк")
+n.mirror_release()
+_held = _wait()
+_clk[0] += 3601
+n.mirror_release()
+_it = _hst[0] if _hst else []
+check("не на місці: до тиші нічого, потім одним пакетом", _held == 1 and len(_hst) == 1, "%s/%s" % (_held, len(_hst)))
+check("не на місці: нові повідомлення зі своїми номерами й позначкою «ВИПРАВЛЕНО»",
+      len(_it) >= 2 and all(m["message_id"] < 10 ** 13 for m in _it) and "ВИПРАВЛЕНО" in _it[0]["text"],
+      str([m["message_id"] for m in _it]))
+config.EDIT_NOTICE = _h_notice
+
+# Стара база без таблиці (sukho.py відкриває її без init_db) — не падаємо.
+with n.db() as c:
+    c.execute("DROP TABLE mirror_wait")
+check("стара база без mirror_wait: віддавання не падає", n.mirror_release() == 0)
+n.mirror_on = lambda: False
+check("дзеркало вимкнене — віддавати нічого", n.mirror_release() == 0)
+import inspect as _insp
+check("обхід віддає відкладене щоразу (once і watcher)",
+      "mirror_release()" in _insp.getsource(n.once) and "mirror_release()" in _insp.getsource(n.watcher))
+config.OWNER_ID = _h_owner
+n.api, n.mirror_store, n.mirror_on, n.time.sleep, n.time.time = _h_api, _h_store, _h_on, _h_sleep, _h_time
+n.paused = False
 
 block("03.10.2026 (вечір) — меню DeepState, «букмекер» і «казино» в новині")
 # ShrikeNews/33030 = tgp_news/121058: аналітика DeepState різалась через кнопку
