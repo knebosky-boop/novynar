@@ -72,7 +72,14 @@ jobs:
         if: always() && steps.guard.outputs.go == 'yes'
         env:
           GH_TOKEN: ${{ secrets.WORKFLOW_PAT }}
-        run: gh workflow run novynar.yml -R ${{ github.repository }}
+        # Збій GitHub на цьому кроці рве ланцюг до рятівного cron (06.10 і 07.10.2026 — до 2 год тиші):
+        # не здаємось з першої спроби, пауза 15/30/45/60 с.
+        run: |
+          for i in 1 2 3 4 5; do
+            gh workflow run novynar.yml -R ${{ github.repository }} && exit 0
+            [ "$i" -lt 5 ] && { echo "::warning::розбудити наступну зміну: спроба $i не вдалась, повтор за $((i*15)) с"; sleep $((i*15)); }
+          done
+          exit 1
 
       - name: Журнал
         if: always() && steps.guard.outputs.go == 'yes'
