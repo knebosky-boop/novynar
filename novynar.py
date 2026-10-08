@@ -1052,6 +1052,26 @@ def is_strike_report(text):
     return "%s … %s" % (hit.group(0).strip(), obj.group(0).strip()) if obj else ""
 
 
+def is_casualty_report(text):
+    """Жертви: «Прилуки. Вже 4 загиблих», «Двоє постраждалих у Соломʼянському районі».
+
+    Знімає ТІЛЬКИ поріг CHANNEL_MIN_LENGTH, як is_statement() і is_strike_report().
+    Вказівка судді 08.10.2026: за добу поріг Смолія зрізав 12 постів про жертви,
+    серед них першу звістку про удар по Прилуках (169705, 155 знаків, з фото) —
+    інші канали дали Прилуки на 3,5 год пізніше. Сигналку слово про жертви
+    не пропускає: його в ній немає. Оперативку далі ріже is_alert()."""
+    low = re.sub(r"\s+", " ", visible(text).lower())
+    neg_before = getattr(config, "CASUALTY_NEG_BEFORE", r"$^")
+    neg_after = getattr(config, "CASUALTY_NEG_AFTER", r"$^")
+    for m in re.finditer(getattr(config, "CASUALTY_WORDS", r"$^"), low):
+        # «Постраждалих немає», «без жертв», «ніхто не постраждав» — це навпаки.
+        if re.search(neg_before, low[max(0, m.start() - 15):m.start()]) or \
+                re.search(neg_after, low[m.end():m.end() + 25]):
+            continue
+        return m.group(0).strip()
+    return ""
+
+
 def is_gambling_ad(low, vis, text):
     """«Букмекер»/«казино» — реклама лише в короткому пості або поруч з її ознакою.
 
@@ -1097,7 +1117,7 @@ def passes_filters(text, has_media, channel=None):
     # (bare_len; до 11.09.2026 рахувались, і 34 знаки проходили за 40).
     floor = getattr(config, "CHANNEL_MIN_LENGTH", {}).get(channel or "")
     if floor and bare_len(text) < floor and not is_statement(text) \
-            and not is_strike_report(text):
+            and not is_strike_report(text) and not is_casualty_report(text):
         return False, "закоротке для цього каналу"
     marker = is_alert(text)
     if marker:
@@ -1847,6 +1867,14 @@ def edit_adds_news(versions, new):
     fresh = [w for w in plain(new).split() if w not in seen]
     if any(ch.isdigit() for w in fresh for ch in w):
         return True
+    # Те саме слово в іншій формі — не новина (08.10.2026, ShrikeNews/33117:
+    # «насыпал персональных санкций … организаций» → «согласовал персональные
+    # санкции … компаний» пішло Миколі повтором). Слово рахуємо свіжим, лише
+    # коли нема жодного побаченого з тим самим початком; числа — як і були, цілком.
+    k = getattr(config, "MIRROR_EDIT_STEM", 5)
+    if k:
+        stems = {w[:k] for w in seen}
+        fresh = [w for w in fresh if w[:k] not in stems]
     return sum(len(w) + 1 for w in fresh) >= getattr(config, "MIRROR_EDIT_NEW_CHARS", 30)
 
 
