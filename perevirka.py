@@ -2351,6 +2351,9 @@ for _t in ["Телеканал Армія TV тимчасово не виход�
 # 4) Пост без слів чекає тексту: дописали — іде як новий; позиція каналу назад не їде.
 fresh_db()
 _r_api, _r_fetch, _r_bc, _r_rem = n.api, n.fetch_channel, n.broadcast, n.remember
+# Блок «тиша» вище лишає QUIET_HOURS = (23, 8): уночі round_trip іде в enqueue, а не broadcast,
+# і тест падав з 23:00 до 08:00 (KeyError 'channel', 08.10.2026). Бойовий конфіг — None.
+_r_quiet, config.QUIET_HOURS = config.QUIET_HOURS, None
 _bc = []
 n.api = lambda m, **kw: {"ok": True}
 n.broadcast = lambda post, title: _bc.append(post["id"])
@@ -2383,6 +2386,7 @@ _bc[:] = []
 n.round_trip()
 check("вже повернутий пост удруге не йде", _bc == [13], str(_bc))
 n.api, n.fetch_channel, n.broadcast, n.remember, n.sources = _r_api, _r_fetch, _r_bc, _r_rem, _r_src
+config.QUIET_HOURS = _r_quiet
 
 def _tysha():
     """Відлежати годину тиші й віддати відкладене: з 06.10.2026 правку мосту несемо не одразу."""
