@@ -1,0 +1,25 @@
+# Строк ключа WORKFLOW_PAT (08.10.2026): лише дата закінчення і тип ключа, сам ключ у журнал не йде.
+# Запуск: gh workflow run pat-strok.yml -R knebosky-boop/novynar
+name: Строк ключа
+on: workflow_dispatch
+permissions: {}
+jobs:
+  strok:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Дата закінчення
+        env:
+          PAT: ${{ secrets.WORKFLOW_PAT }}
+        run: |
+          case "$PAT" in
+            github_pat_*) echo "тип: fine-grained (Settings → Developer settings → Fine-grained tokens)";;
+            ghp_*) echo "тип: classic (Settings → Developer settings → Tokens (classic))";;
+            gho_*) echo "тип: OAuth-ключ GitHub CLI (Settings → Applications → Authorized OAuth Apps → GitHub CLI)";;
+            "") echo "секрет порожній";;
+            *) echo "тип: інший";;
+          esac
+          h=$(curl -sS -o /dev/null -D - -H "Authorization: Bearer $PAT" https://api.github.com/rate_limit)
+          echo "$h" | grep -i '^HTTP/' || true
+          echo "$h" | grep -i 'github-authentication-token-expiration' || echo "строку дії в заголовку немає (ключ безстроковий або не той тип)"
+          echo "$h" | grep -i '^x-oauth-scopes' || true
