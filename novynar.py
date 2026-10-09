@@ -955,6 +955,23 @@ def is_service_ad(text):
     return False
 
 
+def is_aid_notice(text):
+    """Оголошення про видачу гуманітарної допомоги: «Хто може отримати допомогу? …».
+
+    09.10.2026, вказівка судді. Хаби ВПО Добропілля пишуть за одним каркасом
+    (AID_NOTICE_PATTERNS). Слово «гуманітарна» саме по собі — не ознака: новини
+    про допомогу Олешкам чи США лишаються.
+    """
+    vis = re.sub(r"\s+", " ", visible(text)).lower()
+    if not re.search(getattr(config, "AID_NOTICE_CONTEXT", r"гуманітарн"), vis):
+        return False
+    for p in getattr(config, "AID_NOTICE_PATTERNS", []):
+        m = re.search(p, vis)
+        if m:
+            return m.group(0).strip()
+    return False
+
+
 def is_statement(text):
     """Офіційна заява: дієслово мовлення І названий той, хто говорить.
 
@@ -1137,6 +1154,9 @@ def passes_filters(text, has_media, channel=None):
     service = is_service_ad(text)
     if service:
         return False, "оголошення послуг («%s»)" % service
+    aid = is_aid_notice(text)
+    if aid:
+        return False, "видача гумдопомоги («%s»)" % aid
     caption = is_photo_caption(text, has_media, channel)
     if caption:
         return False, "підпис під фото («%s»)" % caption
