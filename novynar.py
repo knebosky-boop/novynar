@@ -1727,6 +1727,63 @@ def mirror_file(file_id):
     return r.content if r.ok else None
 
 
+
+def mirror_pulse(ok, why=""):
+    """Зовнішній пульс сервера (аудит № 7, Б12, 09.10.2026). Сторож тиші на сервері бачить, що замовк
+    Новинар, а що ліг сам сервер — ніхто: він і є той, хто мав би сказати. Доставка дзеркала — єдиний
+    зовнішній дотик до сервера, тож рахуємо її невдачі: MIRROR_ALARM_FAILS поспіль (не частіше однієї
+    на MIRROR_ALARM_GAP_MIN хв) — лист власниці, один на весь збій; перша вдала доставка — «ожив».
+    Стан — у таблиці state: база їде між змінами через кеш Actions. Пульс доставку не ламає ніколи."""
+    try:
+        _mirror_pulse(ok, why)
+    except Exception as e:
+        log.warning("пульс сервера: %s", e)
+
+
+def _mirror_pulse(ok, why):
+    need = int(getattr(config, "MIRROR_ALARM_FAILS", 3) or 0)
+    owner_id = getattr(config, "OWNER_ID", 0)
+    now = int(time.time())
+    fails = int(get_state("mirror_fails", 0) or 0)
+    if ok:
+        if not fails:
+            return
+        since = int(get_state("mirror_fail_since", now) or now)
+        if get_state("mirror_alarm") and owner_id:
+            _pulse_say(owner_id, "✅ Сервер знову відповідає (не відповідав %s хв, з %s)."
+                       % (max(1, (now - since) // 60), datetime.fromtimestamp(since).strftime("%d.%m %H:%M")))
+        for k in ("mirror_fails", "mirror_fail_last", "mirror_fail_since", "mirror_alarm"):
+            set_state(k, "")
+        log.info("пульс сервера: доставка пройшла, лічильник невдач скинуто")
+        return
+    last = int(get_state("mirror_fail_last", 0) or 0)
+    if fails and now - last < int(getattr(config, "MIRROR_ALARM_GAP_MIN", 5)) * 60:
+        return
+    fails += 1
+    set_state("mirror_fails", fails)
+    set_state("mirror_fail_last", now)
+    if fails == 1:
+        set_state("mirror_fail_since", now)
+    log.warning("пульс сервера: доставка не пройшла (%s з %s)", fails, need or "—")
+    if need and fails >= need and not get_state("mirror_alarm") and owner_id:
+        since = int(get_state("mirror_fail_since", now) or now)
+        if _pulse_say(owner_id, "⚠️ Сервер не відповідає: %s спроби поспіль не пройшли (перша — %s).\n"
+                      "Новини Вам ідуть як завжди; під загрозою сервер — Оболонь, Практикант, ранкова "
+                      "автоматика. Причина: %s."
+                      % (fails, datetime.fromtimestamp(since).strftime("%d.%m %H:%M"), why or "невідома")):
+            set_state("mirror_alarm", now)     # не вдалось надіслати — спробуємо з наступною невдачею
+
+
+def _pulse_say(uid, text):
+    """Службовий лист власниці — повз дзеркало (воно ж саме й не доходить)."""
+    global MIRROR_UID
+    keep, MIRROR_UID = MIRROR_UID, None
+    try:
+        return api("sendMessage", chat_id=uid, text=text)
+    finally:
+        MIRROR_UID = keep
+
+
 def mirror_store(msgs):
     import base64
     import json
@@ -1782,14 +1839,18 @@ def mirror_push():
                     input=r["payload"].encode(), capture_output=True, timeout=90)
             except Exception as e:
                 log.warning("дзеркало: сервер не відповів (%s), лишаю %s у черзі", e, len(rows))
+                mirror_pulse(False, "немає зв'язку (%s)" % type(e).__name__)
                 return
             if p.returncode != 0:
-                log.warning("дзеркало: сервер відмовив (%s: %s), лишаю в черзі",
-                            p.returncode, p.stderr.decode(errors="replace")[-200:].strip())
+                err = p.stderr.decode(errors="replace")[-200:].strip()
+                log.warning("дзеркало: сервер відмовив (%s: %s), лишаю в черзі", p.returncode, err)
+                mirror_pulse(False, ("немає зв'язку" if p.returncode == 255 else
+                                     "сервер відмовив, код %s" % p.returncode) + (": " + err if err else ""))
                 return
             with db() as c:
                 c.execute("DELETE FROM mirror WHERE id = ?", (r["id"],))
             log.info("дзеркало: віддано серверу %s", p.stdout.decode(errors="replace").strip())
+        mirror_pulse(True)
     finally:
         for f in (key, kh):
             try:

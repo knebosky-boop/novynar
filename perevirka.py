@@ -2845,6 +2845,139 @@ check("держпрограма житла для ВПО («користуєть
                        "житло в сільській місцевості. Будинок має бути придатним для проживання, а ВПО "
                        "користується ним безоплатно. Строк користування — до 3 років.", True, "dobropillya_td")[0])
 
+# ─────────────────────────  зовнішній пульс сервера (Б12)  ─────────────────────────
+block("09.10.2026 · Б12: доставка на сервер тричі поспіль не пройшла — лист власниці")
+import subprocess as _sp
+_p_api, _p_run, _p_time = n.api, _sp.run, n.time.time
+_p_cfg = {k: getattr(config, k, None) for k in ("MIRROR_KEY", "MIRROR_HOST", "MIRROR_HOSTKEY", "OWNER_ID",
+                                                 "MIRROR_ALARM_FAILS", "MIRROR_ALARM_GAP_MIN")}
+config.MIRROR_KEY, config.MIRROR_HOST, config.MIRROR_HOSTKEY, config.OWNER_ID = "k", "h", "kh", 111
+config.MIRROR_ALARM_FAILS, config.MIRROR_ALARM_GAP_MIN = 3, 5
+_said, _ssh, _clock = [], [], [1_800_000_000]
+_ssh_rc = [255]
+
+
+def _api_p(method, **kw):
+    _said.append((kw.get("chat_id"), kw.get("text", "")))
+    n.mirror_note(kw.get("chat_id"), {"message_id": 1})
+    return {"message_id": 1}
+
+
+def _run_p(cmd, **kw):
+    _ssh.append(cmd)
+    if _ssh_rc[0] == "timeout":
+        raise _sp.TimeoutExpired(cmd, 90)
+    return _sp.CompletedProcess(cmd, _ssh_rc[0], b"ok", b"ssh: connect to host: Connection timed out")
+
+
+def _push_at(minutes, rc):
+    _clock[0] = 1_800_000_000 + minutes * 60
+    _ssh_rc[0] = rc
+    n.mirror_push()
+
+
+def _queue():
+    with n.db() as c:
+        return c.execute("SELECT COUNT(*) FROM mirror").fetchone()[0]
+
+
+n.api, _sp.run, n.time.time = _api_p, _run_p, (lambda: _clock[0])
+fresh_db()
+with n.db() as c:
+    c.execute("INSERT INTO mirror (payload, ts) VALUES (?, ?)", ('{"items": []}', 1_800_000_000))
+_push_at(0, 255)
+check("перша невдача — мовчимо", not _said and n.get_state("mirror_fails") == "1")
+_push_at(1, 255)
+_push_at(2, 255)
+check("невдачі ближче 5 хв до врахованої не рахуємо", not _said and n.get_state("mirror_fails") == "1",
+      "спроб ssh %s" % len(_ssh))
+_push_at(5, 255)
+check("друга врахована невдача — ще мовчимо", not _said and n.get_state("mirror_fails") == "2")
+_push_at(10, "timeout")
+check("третя (тайм-аут) — один лист власниці", len(_said) == 1 and _said[0][0] == 111, str(len(_said)))
+check("у листі: скільки спроб, з котрої години і причина",
+      bool(_said) and "3 спроби поспіль" in _said[0][1] and "немає зв'язку" in _said[0][1], _said[0][1][:60] if _said else "")
+check("новина з черги не загубилась", _queue() == 1)
+_push_at(15, 255)
+_push_at(20, 1)
+check("далі збій триває — другого листа немає", len(_said) == 1, n.get_state("mirror_fails"))
+_push_at(25, 0)
+check("сервер ожив — лист «знову відповідає»", len(_said) == 2 and "знову відповідає" in _said[1][1],
+      _said[-1][1][:50])
+check("…і скільки не відповідав", len(_said) == 2 and "25 хв" in _said[1][1])
+check("черга віддана, лічильник скинуто", _queue() == 0 and not n.get_state("mirror_fails") and not n.get_state("mirror_alarm"))
+_ssh.clear()
+_push_at(30, 255)
+check("порожня черга — на сервер не стукаємо, пульс не рахує", not _ssh and not n.get_state("mirror_fails"))
+
+# короткий збій (до трьох) — лише лічильник, жодних листів і «ожив» теж немає
+with n.db() as c:
+    c.execute("INSERT INTO mirror (payload, ts) VALUES (?, ?)", ('{"items": []}', _clock[0]))
+_said.clear()
+_push_at(40, 255)
+_push_at(45, 255)
+_push_at(50, 0)
+check("дві невдачі й ожив — нічого не пишемо", not _said and not n.get_state("mirror_fails"))
+
+# відмова приймача (сервер живий, код ≠ 255) — та сама невдача, інша причина
+with n.db() as c:
+    c.execute("INSERT INTO mirror (payload, ts) VALUES (?, ?)", ('{"items": []}', _clock[0]))
+for m in (60, 65, 70):
+    _push_at(m, 1)
+check("відмова приймача: у причині — код", len(_said) == 1 and "сервер відмовив, код 1" in _said[0][1])
+_push_at(75, 0)
+_said.clear()
+
+# лист не пішов (Telegram збоїть) — пробуємо з наступною врахованою невдачею
+with n.db() as c:
+    c.execute("INSERT INTO mirror (payload, ts) VALUES (?, ?)", ('{"items": []}', _clock[0]))
+n.api = lambda method, **kw: None
+for m in (80, 85, 90):
+    _push_at(m, 255)
+check("лист не пішов — тривогу не позначено", not n.get_state("mirror_alarm"))
+n.api = _api_p
+_push_at(95, 255)
+check("наступна невдача — лист таки пішов", len(_said) == 1 and n.get_state("mirror_alarm"))
+_push_at(100, 0)
+_said.clear()
+
+# лист власниці не лізе в дзеркало, навіть якщо пульс спрацював посеред send_post
+n.MIRROR.clear()
+n.MIRROR_UID = 111
+n._pulse_say(111, "x")
+check("службовий лист повз дзеркало", not n.MIRROR and n.MIRROR_UID == 111)
+n.MIRROR_UID = None
+_said.clear()
+
+# вимкнено (0) — лічимо, але не пишемо; пульс, що падає, доставку не ламає
+config.MIRROR_ALARM_FAILS = 0
+with n.db() as c:
+    c.execute("INSERT INTO mirror (payload, ts) VALUES (?, ?)", ('{"items": []}', _clock[0]))
+for m in (110, 115, 120, 125):
+    _push_at(m, 255)
+check("MIRROR_ALARM_FAILS = 0 — листів немає", not _said)
+config.MIRROR_ALARM_FAILS = 3
+_ps = n.get_state
+n.get_state = lambda *a, **k: 1 / 0
+_push_at(130, 0)
+n.get_state = _ps
+check("пульс упав — доставка все одно пройшла", _queue() == 0)
+
+# мутація: без проміжку три спроби за дві хвилини вже тривога (тому проміжок і потрібен)
+config.MIRROR_ALARM_GAP_MIN = 0
+n.set_state("mirror_fails", "")
+n.set_state("mirror_alarm", "")
+with n.db() as c:
+    c.execute("INSERT INTO mirror (payload, ts) VALUES (?, ?)", ('{"items": []}', _clock[0]))
+_said.clear()
+for m in (140, 141, 142):
+    _push_at(m, 255)
+check("мутація GAP = 0: тривога за 2 хв — проміжок працює", len(_said) == 1)
+
+n.api, _sp.run, n.time.time = _p_api, _p_run, _p_time
+for _k, _v in _p_cfg.items():
+    setattr(config, _k, _v)
+
 print("\n" + "═" * 62)
 print("  ПІДСУМОК: %s правильно, %s помилок" % (PASS, FAIL))
 print("═" * 62)
