@@ -5,6 +5,10 @@
 """
 import os, re, sys, time
 import config, novynar as n
+# Тести беруть Миколу (129576564) за зразкового читача; його бойове блокування
+# (BLOCKED, 10.10.2026) тут вимкнене, а саме блокування перевіряє блок «Відрізані».
+BLOCKED_BOJOVYI = set(getattr(config, "BLOCKED", set()))
+config.BLOCKED = set()
 _api_original = n.api          # справжній api() — далі його багато разів підміняють
 _SOURCES_REAL = list(config.SOURCES)   # блок про вимкнення каналів його підміняє
 
@@ -1244,6 +1248,30 @@ check("/add помічає дурницю", "не" in cmd("/add @qwerty_nemaye_t
 check("/del прибирає", "Прибрав" in cmd("/del @tsn_ua") and len(n.sources()) == before)
 check("/allow впускає", "Впустив" in cmd("/allow @petro") and n.is_allowed(9, "petro"))
 check("/deny відрізає", "Відрізав" in cmd("/deny @petro") and not n.is_allowed(9, "petro"))
+
+block("Відрізані (/deny без юзернейма, BLOCKED)")
+start(1, "kate")
+with n.db() as c:
+    c.execute("INSERT OR REPLACE INTO people VALUES (129576564,'',0,1)")
+    c.execute("INSERT OR REPLACE INTO people VALUES (77,'',0,1)")
+check("бойовий BLOCKED містить Миколу", 129576564 in BLOCKED_BOJOVYI)
+check("/deny за ім'ям з NAMES стирає рядок",
+      "Відрізав" in cmd("/deny Микола") and not n.is_allowed(129576564, ""))
+check("після /deny за ім'ям /start не впускає назад",
+      (cmd("/start", 129576564, "") or True) and 129576564 not in [p["user_id"] for p in n.readers()])
+check("/deny за номером стирає рядок",
+      "Відрізав" in cmd("/deny 77") and not n.is_allowed(77, ""))
+check("/deny телефону чи дурниці не бреше «Відрізав»",
+      "не знайшов" in cmd("/deny +380 66 000 00 00"))
+check("/deny власницю не чіпає", "не знайшов" in cmd("/deny 1") and n.is_owner(1))
+with n.db() as c:
+    c.execute("INSERT OR REPLACE INTO people VALUES (129576564,'',0,1)")
+config.BLOCKED = {129576564}
+check("BLOCKED: живий рядок у базі, а новин не шле",
+      129576564 not in [p["user_id"] for p in n.readers()])
+check("BLOCKED: /start не впускає", not n.is_allowed(129576564, ""))
+check("BLOCKED: власниця лишається", 1 in [p["user_id"] for p in n.readers()])
+config.BLOCKED = set()
 check("чужому команди не даються", cmd("/add @x", uid=99, uname="hacker") == "" or
       "власниц" in cmd("/add @x", uid=99, uname="hacker"))
 check("/stop вимикає читача", "Зупинив" in cmd("/stop"))
@@ -1675,6 +1703,29 @@ check("старий відбиток у базі — читача не турб�
 with n.db() as c:
     _h = c.execute("SELECT hash FROM sent WHERE post_id = 55").fetchone()["hash"]
 check("старий відбиток тихо замінюється новим", _h == n.text_hash(_dots["text"]))
+
+# відрізаний (BLOCKED) устиг отримати новину до блокування — правок йому не несемо
+fresh_db()
+with n.db() as c:
+    c.execute("INSERT INTO people VALUES (1,'kate',1,1)")
+    c.execute("INSERT INTO people VALUES (129576564,'',0,1)")
+_notice_blk = getattr(n.config, "EDIT_NOTICE", True)
+n.config.EDIT_NOTICE = True
+_post_blk = dict(_post, id=78, link="https://t.me/tgp_news/78")
+n.broadcast(dict(_post_blk), "Тарас Григорович")
+with n.db() as c:
+    _blk_rows = c.execute("SELECT COUNT(*) k FROM sent_msg WHERE user_id = 129576564").fetchone()["k"]
+check("до блокування новина пішла обом", _blk_rows == 1, "рядків: %s" % _blk_rows)
+config.BLOCKED = {129576564}
+_calls[:] = []
+n.check_edits("tgp_news", [dict(_post_blk, text=TEXT_NEW)], "Тарас Григорович")
+check("BLOCKED: правку надісланого власниця отримує",
+      [1 for m, kw in _calls if m == "editMessageText" and kw.get("chat_id") == 1])
+check("BLOCKED: відрізаному — ні правки, ні записки про неї",
+      not [m for m, kw in _calls if kw.get("chat_id") == 129576564],
+      "викликів йому: %s" % [m for m, kw in _calls if kw.get("chat_id") == 129576564])
+config.BLOCKED = set()
+n.config.EDIT_NOTICE = _notice_blk
 
 block("Тихі правки: крайні випадки")
 

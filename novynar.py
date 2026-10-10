@@ -156,9 +156,17 @@ def sources():
                 c.execute("SELECT * FROM sources WHERE active = 1 ORDER BY channel")]
 
 
+def is_blocked(uid):
+    try:
+        return int(uid or 0) in getattr(config, "BLOCKED", set())
+    except (TypeError, ValueError):
+        return False
+
+
 def readers():
     with db() as c:
-        return [dict(r) for r in c.execute("SELECT * FROM people WHERE active = 1")]
+        return [dict(r) for r in c.execute("SELECT * FROM people WHERE active = 1")
+                if not is_blocked(r["user_id"])]
 
 
 def owner():
@@ -2104,6 +2112,10 @@ def push_edit(row, post, title):
 
     done = 0
     for uid, mine in by_user.items():
+        # Відрізаному (BLOCKED) не несемо й правок того, що він устиг отримати:
+        # sent_msg пам'ятає його ще EDIT_HOURS після блокування (10.10.2026).
+        if is_blocked(uid):
+            continue
         mine.sort(key=lambda m: m["part"])
         # Правимо на місці лише тоді, коли частин рівно стільки ж:
         # інакше кінець новини лишиться від старої версії.
@@ -2618,6 +2630,8 @@ def watcher():
 # ─────────────────────────────  команди бота  ─────────────────────────────
 
 def is_allowed(uid, uname):
+    if is_blocked(uid):
+        return False
     with db() as c:
         if c.execute("SELECT 1 FROM people WHERE user_id = ?", (uid,)).fetchone():
             return True
@@ -2803,13 +2817,30 @@ def handle_owner_command(chat, cmd, arg):
         if not who:
             # Без цього порожнє who вимикало всіх із порожнім юзернеймом —
             # тобто кожного, кого підняв bootstrap_people() (05.09.2026).
-            reply(chat, "Напишіть так: <code>/deny @юзернейм</code>")
+            reply(chat, "Напишіть так: <code>/deny @юзернейм</code>, "
+                        "<code>/deny Ім'я</code> або <code>/deny 123456789</code>")
             return
+        # Людина без юзернейма знаходиться за номером або за ім'ям з NAMES
+        # (10.10.2026: у Миколи юзернейма нема, і /deny його не брав).
+        ids = {uid for uid, name in getattr(config, "NAMES", {}).items()
+               if name.lower() == who}
+        if who.isdigit():
+            ids.add(int(who))
         with db() as c:
-            c.execute("DELETE FROM allowed WHERE username = ?", (who,))
-            c.execute("UPDATE people SET active = 0 WHERE lower(username) = ? "
-                      "AND is_owner = 0", (who,))
-        reply(chat, "Відрізав <b>@%s</b> від потоку." % html_mod.escape(who))
+            n = 0
+            for uid in ids:
+                n += c.execute("DELETE FROM allowed WHERE username = ?",
+                               (str(uid),)).rowcount
+            n += c.execute("DELETE FROM allowed WHERE username = ?", (who,)).rowcount
+            # Рядок стираємо, а не гасимо: з погашеним рядком is_allowed()
+            # пускав назад першим же /start.
+            n += c.execute("DELETE FROM people WHERE lower(username) = ? "
+                           "AND is_owner = 0", (who,)).rowcount
+            for uid in ids:
+                n += c.execute("DELETE FROM people WHERE user_id = ? "
+                               "AND is_owner = 0", (uid,)).rowcount
+        reply(chat, ("Відрізав <b>%s</b> від потоку." if n else
+                     "Серед читачів <b>%s</b> не знайшов.") % html_mod.escape(arg.strip()))
 
 
 def send_letter(chat, text):

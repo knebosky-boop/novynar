@@ -5,6 +5,9 @@ import os, sys, datetime as dt
 sys.path.insert(0, os.path.expanduser("~/.claude/Новинар"))
 os.chdir(os.path.expanduser("~/.claude/Новинар"))
 import config, novynar as n
+# Механізм нагадувань міряємо на Миколі як на зразковому читачі; його бойове
+# блокування (BLOCKED, 10.10.2026) перевіряє perevirka.py, блок «Відрізані».
+config.BLOCKED = set()
 
 n.DB_PATH = "/tmp/nv_zhyvyi.db"
 if os.path.exists(n.DB_PATH):
