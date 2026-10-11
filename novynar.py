@@ -590,6 +590,34 @@ def is_daily_toll(text):
     return ""
 
 
+def is_loss_tally(text):
+    """Підрахунок втрат противника: зведення Генштабу, лічильник СБС.
+
+    Не новина, а щоденна цифра (вказівка судді 11.10.2026). Ознаки — у config,
+    біля LOSS_TALLY_HEAD_PATTERNS: заголовок зведення на початку поста, таблиця
+    «танки: 12 408», слово лічильника з числом у короткому пості. Втрати,
+    згадані всередині новини про бій чи в довгому розборі, сюди не потрапляють.
+    Повертає фразу, що спрацювала, або порожній рядок."""
+    vis = visible(text).strip()
+    low = vis.lower()
+    head = low[:getattr(config, "LOSS_TALLY_HEAD", 200)]
+    for pat in getattr(config, "LOSS_TALLY_HEAD_PATTERNS", []):
+        m = re.search(pat, head)
+        if m:
+            return re.sub(r"\s+", " ", m.group(0)).strip()[:60]
+    row = getattr(config, "LOSS_TALLY_ROW", "")
+    if row and bare_len(text) <= getattr(config, "LOSS_TALLY_ROWS_MAX", 1200):
+        rows = re.findall(row, low, re.M)
+        if len(rows) >= getattr(config, "LOSS_TALLY_ROWS_MIN", 3):
+            return "таблиця втрат"
+    slang = getattr(config, "LOSS_TALLY_SLANG", "")
+    if slang and bare_len(text) <= getattr(config, "LOSS_TALLY_SLANG_MAX", 450):
+        m = re.search(slang, low)
+        if m and re.search(r"\d{2,}", low):
+            return m.group(0)
+    return ""
+
+
 def off_topic(low, channel):
     """Тема, якої від цього каналу не треба (напр. суто ізраїльські новини)."""
     rule = getattr(config, "CHANNEL_TOPIC_SKIP", {}).get(channel or "")
@@ -684,6 +712,31 @@ def is_fundraising_tail(text):
         m = re.search(pat, low, re.IGNORECASE)
         if m:
             return m.group(0)
+    return None
+
+
+def is_support_plea(text):
+    """Прохання до читача без реквізитів: «канал потребує вашої підтримки».
+
+    Канал дає збір з банкою (його ріже is_fundraising), а слідом — допис-відповідь
+    без адреси й без слова «збір»: tgp_news/121555 пішов читачці 10.10.2026.
+    Візерунки (SUPPORT_PLEA_PATTERNS) вимагають звернення «ваш», а абзац-цитату
+    пропускаємо: «Україна потребує вашої підтримки», — Зеленський — новина.
+    Повертає фразу, що спрацювала, або None."""
+    pats = getattr(config, "SUPPORT_PLEA_PATTERNS", [])
+    if not pats:
+        return None
+    vis = visible(text)
+    low = vis.lower()
+    for pat in pats:
+        for m in re.finditer(pat, low, re.IGNORECASE):
+            start = low.rfind("\n", 0, m.start()) + 1
+            end = low.find("\n", m.end())
+            para = vis[start:end if end >= 0 else len(vis)]
+            # Автор після тире або дієслово мовлення з названим мовцем — це цитата.
+            if re.search(r"[,»\"”“]\s*[-–—]\s*[A-ZА-ЯІЇЄҐЁ]", para) or is_statement(para):
+                continue
+            return re.sub(r"\s+", " ", m.group(0))[:60]
     return None
 
 
@@ -1140,6 +1193,9 @@ def passes_filters(text, has_media, channel=None):
     toll = is_daily_toll(text)
     if toll:
         return False, "щоденна зведена статистика («%s»)" % toll
+    tally = is_loss_tally(text)
+    if tally:
+        return False, "підрахунок втрат («%s»)" % tally
     low = flat(text).lower()
     theme = off_topic(low, channel)
     if theme:
@@ -1159,6 +1215,9 @@ def passes_filters(text, has_media, channel=None):
     tail = is_fundraising_tail(text)
     if tail:
         return False, "хвіст збору («%s»)" % tail
+    plea = is_support_plea(text)
+    if plea:
+        return False, "прохання про підтримку («%s»)" % plea
     promo = is_channel_promo(text)
     if promo:
         return False, "реклама чужого каналу"
