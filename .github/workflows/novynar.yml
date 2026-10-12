@@ -19,8 +19,25 @@ jobs:
         id: guard
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Збій API GitHub на цьому кроці рве ланцюг (12.10.2026: HTTP 502 → exit 1, наступну зміну не
+        # розбуджено, 4 год тиші): питаємо до 5 разів, пауза 15/30/45/60 с. Не відповів узагалі —
+        # працюємо: від двох змін водночас однаково береже concurrency.
         run: |
-          n=$(gh api "repos/${{ github.repository }}/actions/workflows/novynar.yml/runs?status=in_progress" -q '.workflow_runs | length')
+          n=""
+          for i in 1 2 3 4 5; do
+            if n=$(gh api "repos/${{ github.repository }}/actions/workflows/novynar.yml/runs?status=in_progress" -q '.workflow_runs | length'); then
+              break
+            fi
+            n=""
+            if [ "$i" -lt 5 ]; then
+              echo "::warning::чи працює інша зміна: спроба $i не вдалась, повтор за $((i*15)) с"
+              sleep $((i*15))
+            fi
+          done
+          if [ -z "$n" ]; then
+            echo "::warning::GitHub так і не відповів, чи працює інша зміна, — працюю"
+            n=1
+          fi
           if [ "$n" -gt 1 ]; then
             echo "вже працює інша зміна ($n) — лягаю спати"
             echo "go=no" >> $GITHUB_OUTPUT
