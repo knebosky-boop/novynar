@@ -1254,7 +1254,7 @@ start(1, "kate")
 with n.db() as c:
     c.execute("INSERT OR REPLACE INTO people VALUES (129576564,'',0,1)")
     c.execute("INSERT OR REPLACE INTO people VALUES (77,'',0,1)")
-check("бойовий BLOCKED містить Миколу", 129576564 in BLOCKED_BOJOVYI)
+check("бойовий BLOCKED без Миколи (повернуто 15.10.2026)", 129576564 not in BLOCKED_BOJOVYI)
 check("/deny за ім'ям з NAMES стирає рядок",
       "Відрізав" in cmd("/deny Микола") and not n.is_allowed(129576564, ""))
 check("після /deny за ім'ям /start не впускає назад",
@@ -1272,6 +1272,15 @@ check("BLOCKED: живий рядок у базі, а новин не шле",
 check("BLOCKED: /start не впускає", not n.is_allowed(129576564, ""))
 check("BLOCKED: власниця лишається", 1 in [p["user_id"] for p in n.readers()])
 config.BLOCKED = set()
+# Людину без юзернейма is_allowed() шукає за номером, а підказка «стукав» пропонує
+# /allow Ім'я з NAMES — «Впустив» казало, а /start не пускав (15.10.2026).
+with n.db() as c:
+    c.execute("DELETE FROM people WHERE user_id = 129576564")
+    c.execute("DELETE FROM allowed WHERE username IN ('129576564', 'микола')")
+check("/allow за ім'ям з NAMES впускає людину без юзернейма",
+      "Впустив" in cmd("/allow Микола") and n.is_allowed(129576564, ""))
+check("після /allow за ім'ям /start вмикає новини",
+      (cmd("/start", 129576564, "") or True) and 129576564 in [p["user_id"] for p in n.readers()])
 check("чужому команди не даються", cmd("/add @x", uid=99, uname="hacker") == "" or
       "власниц" in cmd("/add @x", uid=99, uname="hacker"))
 check("/stop вимикає читача", "Зупинив" in cmd("/stop"))

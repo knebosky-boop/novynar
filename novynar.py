@@ -2867,10 +2867,15 @@ def handle_owner_command(chat, cmd, arg):
         if not who:
             reply(chat, "Напишіть так: <code>/allow @юзернейм</code>")
             return
+        # Людину без юзернейма is_allowed() шукає за номером, а підказка «стукав»
+        # пропонує /allow Ім'я з NAMES — ім'я переводимо в номер, як у /deny (15.10.2026).
+        keys = {who} | {str(uid) for uid, name in getattr(config, "NAMES", {}).items()
+                        if name.lower() == who}
         with db() as c:
-            c.execute("INSERT OR REPLACE INTO allowed (username, ts) VALUES (?,?)",
-                      (who, int(time.time())))
-        reply(chat, "Впустив <b>@%s</b>. Хай тисне Start у бота." % html_mod.escape(who))
+            for key in keys:
+                c.execute("INSERT OR REPLACE INTO allowed (username, ts) VALUES (?,?)",
+                          (key, int(time.time())))
+        reply(chat, "Впустив <b>%s</b>. Хай тисне Start у бота." % html_mod.escape(arg.strip()))
     elif cmd == "/deny":
         who = arg.lstrip("@").strip().lower()
         if not who:
