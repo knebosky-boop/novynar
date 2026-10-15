@@ -3110,6 +3110,89 @@ check("мутація: без візерунків зведення Геншта
       _prod(TALLY_GSH, True, "ShrikeNews")[0])
 config.LOSS_TALLY_HEAD_PATTERNS, config.LOSS_TALLY_ROW, config.LOSS_TALLY_SLANG = _th, _tr, _ts
 
+block("15.10.2026 — мем під фото чи відео: репліка каналу без новини")
+# Вказівка судді 15.10.2026: «меми з фото ріж». Картинка знімала поріг MIN_LENGTH,
+# і за 14–15.10 читачці пішло 12 реплік під скрінами й відео. Тексти — з корпусу.
+def _mq(raw, ch, media=True):
+    return n.passes_filters(n.cut_signature(n.cut_donation(raw), ch), media, ch)
+for raw, ch, label in [
+    ("Віримо?", "tgp_news", "tgp_news/121926 «Віримо?»"),
+    ("<b>Літрій ще живий...</b>", "tgp_news", "tgp_news/121917 «Літрій ще живий...»"),
+    ("<b>Вони сильно здивуються.</b>", "tgp_news", "tgp_news/121931 «Вони сильно здивуються.»"),
+    ('Ну и бонусом.\n\n<a href="https://t.me/yigal_levin">@yigal_levin</a>', "yigal_levin",
+     "yigal_levin/102391 «Ну и бонусом.» з підписом"),
+    ('<i><b>\U0001fae0</b></i> Министр обороны Пакистана, если что.\n\n<a href="https://t.me/yigal_levin">'
+     '@yigal_levin</a>', "yigal_levin", "yigal_levin/102352 «Министр обороны Пакистана, если что.»"),
+    ("Пидры", "ShrikeNews", "ShrikeNews/33312 «Пидры»"),
+    ('<i><b>🥱</b></i> Ну, надобраніч!\n\n<i><b>🦢</b></i> <a href="https://t.me/+C-GBzjXeCmI1NTA0">'
+     'Підпишись на Чорного лебедя</a>', "chorleb", "chorleb/254 «Ну, надобраніч!»"),
+    ("Шось загадкове", "serhii_flash", "serhii_flash/7805 «Шось загадкове»"),
+]:
+    _v = _mq(raw, ch)
+    check(label + " — мем, ріжемо", not _v[0] and _v[1].startswith(n.MEDIA_QUIP), _v[1])
+for raw, ch, label in [
+    ("<b>Саратов. OZON<i><b>🔥</b></i></b>\n\nСгорел к хуям.", "ShrikeNews",
+     "ShrikeNews/32560 «Саратов. OZON Сгорел» — відео удару"),
+    ("<b>Бєлгородська ТЕЦ після всіх ударів.</b>", "tgp_news", "tgp_news/121564 ТЕЦ після ударів"),
+    ("Адмирал эссен Нептун <i><b>🚀</b></i>", "ShrikeNews", "ShrikeNews/32519 «Адмирал эссен Нептун»"),
+    ("Один из паков пленных", "ShrikeNews", "ShrikeNews/32924 полонені"),
+    ("Знов горбата Гербера", "serhii_flash", "serhii_flash/7219 дрон у Флеша"),
+    ('<i><b>🥺</b></i> Один НРК <a href="https://www.tiktok.com/@rs_42br/video/7688357474398735637">42-й ОМБр'
+     '</a> спасает другой НРК.\n\n<a href="https://t.me/yigal_levin">@yigal_levin</a>', "yigal_levin",
+     "yigal_levin/101602 бойове відео НРК"),
+    ('Святогорівка\n\n<i><b>🌆</b></i> <a href="https://t.me/dobropillya_td">Подписаться</a> | '
+     '<a href="https://t.me/tipicaldobrop">Предложить новость</a>', "dobropillya_td",
+     "dobropillya_td/71409 Святогорівка (вказівка 12.09)"),
+    ("<b><i><b>⏺</b></i></b><b> Вже 20 поранених у Рівному через атаку росії</b>", "smolii_ukraine",
+     "smolii_ukraine/172050 жертви"),
+    ("Пенза. #ru_mobilization", "ToBeOr_Official", "«Пенза. …» — форма «Місто. …»"),
+    ("Могли б і подякувати Трампу публічно. Але їм мало.", "tgp_news",
+     "50 голих знаків — довше за поріг, не чіпаємо"),
+]:
+    _v = _mq(raw, ch)
+    check(label + " — іде", _v[0], _v[1])
+check("без медіа коротка репліка — як і раніше «закоротке», не мем",
+      _mq("Віримо?", "tgp_news", media=False)[1] == "закоротке")
+check("репліка з посиланням на статтю — не мем (читач відкриє статтю)",
+      _mq("Ось що пише Reuters https://reut.rs/abc", "tgp_news")[0])
+_mql = config.MEDIA_QUIP_MAX_LEN
+config.MEDIA_QUIP_MAX_LEN = 0
+check("мутація: MEDIA_QUIP_MAX_LEN = 0 — «Віримо?» з фото знову проходить", _mq("Віримо?", "tgp_news")[0])
+config.MEDIA_QUIP_MAX_LEN = _mql
+check("tgp_news/121532 «ЛВДС «Самара».» — відео удару, іде", _mq("ЛВДС «Самара».", "tgp_news")[0], _mq("ЛВДС «Самара».", "tgp_news")[1])
+_mqn = config.MEDIA_QUIP_NEWS
+config.MEDIA_QUIP_NEWS = r"$^"
+check("мутація: без MEDIA_QUIP_NEWS «ЛВДС «Самара».» ріжеться — береже саме він",
+      not _mq("ЛВДС «Самара».", "tgp_news")[0])
+config.MEDIA_QUIP_NEWS = _mqn
+
+# Мем чекає, як пост без слів: канал дописав новину під картинку — іде як новий.
+fresh_db()
+_r_api, _r_fetch, _r_bc, _r_rem, _r_src = n.api, n.fetch_channel, n.broadcast, n.remember, n.sources
+_r_quiet, config.QUIET_HOURS = config.QUIET_HOURS, None
+_bc = []
+n.api = lambda m, **kw: {"ok": True}
+n.broadcast = lambda post, title: _bc.append(post["id"])
+n.remember = lambda ch, t: None
+with n.db() as c:
+    c.execute("INSERT INTO sources (channel, title, last_id, active) VALUES ('tgp_news','Т',10,1)")
+n.sources = lambda: [{"channel": "tgp_news", "title": "Т", "last_id": n.db().execute(
+    "SELECT last_id FROM sources WHERE channel='tgp_news'").fetchone()[0]}]
+_shown = [{"id": 11, "text": "Віримо?", "photo": "p.jpg", "video": False, "link": "l11"}]
+n.fetch_channel = lambda ch: ("Т", [dict(p) for p in _shown])
+n.round_trip()
+with n.db() as c:
+    _held = c.execute("SELECT COUNT(*) FROM bare_held").fetchone()[0]
+check("мем не пішов і чекає, чи допишуть текст", not _bc and _held == 1, "надіслано %s, чекає %s" % (_bc, _held))
+n.round_trip()
+check("мем без змін удруге не повертається", not _bc, str(_bc))
+_shown = [{"id": 11, "text": "Віримо?\n\nТрамп пообіцяв ухвалити рішення щодо Tomahawk для України до "
+           "кінця тижня, повідомили в Білому домі.", "photo": "p.jpg", "video": False, "link": "l11"}]
+n.round_trip()
+check("під мемом дописали новину — іде як новий", _bc == [11], str(_bc))
+n.api, n.fetch_channel, n.broadcast, n.remember, n.sources = _r_api, _r_fetch, _r_bc, _r_rem, _r_src
+config.QUIET_HOURS = _r_quiet
+
 print("\n" + "═" * 62)
 print("  ПІДСУМОК: %s правильно, %s помилок" % (PASS, FAIL))
 print("═" * 62)

@@ -1098,6 +1098,38 @@ def is_letterless(text):
     return len(re.findall(r"[^\W\d_]", vis)) < getattr(config, "LETTERLESS_MIN", 3)
 
 
+MEDIA_QUIP = "мем під фото"
+
+
+def is_media_quip(text, has_media, channel=None):
+    """Репліка каналу під скріном чи відео: «Віримо?», «Літрій ще живий...».
+
+    Вказівка судді 15.10.2026 — «меми з фото ріж». Картинка знімала поріг
+    MIN_LENGTH, і такі пости йшли читачам (12 за 14–15.10). Короткий підпис
+    під відео удару — це новина («Саратов. OZON Сгорел», «Бєлгородська ТЕЦ
+    після всіх ударів.»), тому ріжемо лише коли ознаки новини немає:
+    MEDIA_QUIP_NEWS, форма «Місто. …», жертви, влучання, NEWS_MARKERS, keep
+    підписів каналу. Повертає підпис (до 40 знаків) або порожній рядок."""
+    limit = getattr(config, "MEDIA_QUIP_MAX_LEN", 0)
+    if not limit or not has_media or bare_len(text) >= limit:
+        return ""
+    vis = re.sub(r"\s+", " ", visible(text)).strip()
+    if not vis or re.search(r"https?://", vis):
+        return ""
+    low = vis.lower()
+    rule = getattr(config, "PHOTO_CAPTION_CHANNELS", {}).get(channel or "") or {}
+    if any(k in low for k in rule.get("keep", [])):
+        return ""
+    if re.search(getattr(config, "MEDIA_QUIP_NEWS", r"$^"), low) or \
+            re.search(getattr(config, "MEDIA_QUIP_PLACE", r"$^"), vis):
+        return ""
+    if any(starts_word(low, w) for w in getattr(config, "NEWS_MARKERS", [])):
+        return ""
+    if is_strike_report(text) or is_casualty_report(text):
+        return ""
+    return vis[:40]
+
+
 def is_stream_promo(text):
     """Анонс власного стріму чи ефіру каналу (вказівка судді 03.10.2026 — різати).
 
@@ -1238,6 +1270,9 @@ def passes_filters(text, has_media, channel=None):
     # після зняття підпису не лишилось новини взагалі.
     if signature_only(text, channel or ""):
         return False, "сам лише підпис каналу"
+    quip = is_media_quip(text, has_media, channel)
+    if quip:
+        return False, "%s («%s»)" % (MEDIA_QUIP, quip)
     # Звіряємо і сирий текст, і текст без розмітки. Сирий потрібен, бо
     # «send.monobank» сидить у href; текст без розмітки — бо фразу рве тег:
     # «УВАГА,ЗАЛИШИЛОСЯ</b> <b>ЗІБРАТИ 10 000 ГРН» стоп-словом «залишилося
@@ -2540,7 +2575,8 @@ def round_trip():
             ok, why = passes_filters(post["text"], bool(post["photo"] or post["video"]), ch)
             if not ok:
                 log.info("пропуск %s/%s: %s", ch, post["id"], why)
-                if why == LETTERLESS:
+                # Мем теж чекає: канал буває дописує новину під картинку пізніше.
+                if why == LETTERLESS or why.startswith(MEDIA_QUIP):
                     hold_bare(ch, post["id"])
                 continue
             n = norm(post["text"])
@@ -2592,7 +2628,8 @@ def revive_bare(channel, posts):
                 c.execute("SELECT post_id FROM bare_held WHERE channel = ?", (channel,))}
     out = []
     for p in posts:
-        if p["id"] in held and not is_letterless(p["text"]):
+        if p["id"] in held and not is_letterless(p["text"]) and \
+                not is_media_quip(p["text"], bool(p.get("photo") or p.get("video")), channel):
             with db() as c:
                 c.execute("DELETE FROM bare_held WHERE channel = ? AND post_id = ?",
                           (channel, p["id"]))
