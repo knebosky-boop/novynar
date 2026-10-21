@@ -53,6 +53,30 @@ def db():
     return conn
 
 
+def compact_db(min_share=0.25):
+    """Стиснути базу наприкінці зміни, коли порожніх сторінок понад чверть.
+
+    21.10.2026: бойова база — 21,6 МБ, з них ≈20 МБ порожніх сторінок (рядки
+    живуть добу й стираються, а файл ніколи не стискали). Кеш Actions жме її
+    до 229 КБ, тож це гігієна, а не швидкість. VACUUM на такій базі — частки
+    секунди; збій не страшний — зміна просто закінчиться без стискання."""
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=30)
+        try:
+            pages = conn.execute("PRAGMA page_count").fetchone()[0]
+            free = conn.execute("PRAGMA freelist_count").fetchone()[0]
+            if pages and free / pages > min_share:
+                conn.execute("VACUUM")
+                log.info("базу стиснуто: %s → %s сторінок", pages,
+                         conn.execute("PRAGMA page_count").fetchone()[0])
+                return True
+        finally:
+            conn.close()
+    except Exception as e:
+        log.warning("стиснути базу не вдалося: %s", e)
+    return False
+
+
 def init_db():
     with db() as c:
         c.executescript("""
@@ -1130,6 +1154,39 @@ def is_media_quip(text, has_media, channel=None):
     return vis[:40]
 
 
+REPLY_QUIP = "репліка-відповідь"
+
+
+def is_reply_quip(text, has_media, is_reply, channel=None):
+    """Коментар каналу відповіддю на власну новину (слово судді 21.10.2026).
+
+    tgp_news/122471 «Якого прогресу? Віткофф перестав говорити російською і
+    перейшов на англійську?», ShrikeNews/33481 «Будет забавно, если Маск…».
+    Ріжемо лише відповідь без медіа, коротшу за REPLY_QUIP_MAX_LEN, де немає
+    жодної ознаки новини (див. config). Повертає початок (до 40 знаків) або ""."""
+    limit = getattr(config, "REPLY_QUIP_MAX_LEN", 0)
+    if not limit or not is_reply or has_media or bare_len(text) >= limit:
+        return ""
+    vis = re.sub(r"\s+", " ", visible(text)).strip()
+    if not vis or re.search(r"https?://", vis):
+        return ""
+    if re.match(r"[\U0001F1E6-\U0001F1FF]", re.sub(r"<[^>]+>", "", text or "").strip()):
+        return ""                                   # прапор на початку — новина каналу
+    low = vis.lower()
+    rule = getattr(config, "PHOTO_CAPTION_CHANNELS", {}).get(channel or "") or {}
+    if any(k in low for k in rule.get("keep", [])):
+        return ""
+    if re.search(getattr(config, "MEDIA_QUIP_NEWS", r"$^"), low) or \
+            re.search(getattr(config, "MEDIA_QUIP_PLACE", r"$^"), vis) or \
+            re.search(getattr(config, "REPLY_QUIP_SOURCE", r"$^"), vis):
+        return ""
+    if any(starts_word(low, w) for w in getattr(config, "NEWS_MARKERS", [])):
+        return ""
+    if is_strike_report(text) or is_casualty_report(text):
+        return ""
+    return vis[:40]
+
+
 def is_stream_promo(text):
     """Анонс власного стріму чи ефіру каналу (вказівка судді 03.10.2026 — різати).
 
@@ -1208,7 +1265,7 @@ def is_gambling_ad(low, vis, text):
     return "%s + %s" % (word, cue) if cue else None
 
 
-def passes_filters(text, has_media, channel=None):
+def passes_filters(text, has_media, channel=None, is_reply=False):
     if is_service(text):
         return False, "службова позначка"
     if is_letterless(text):
@@ -1273,6 +1330,9 @@ def passes_filters(text, has_media, channel=None):
     quip = is_media_quip(text, has_media, channel)
     if quip:
         return False, "%s («%s»)" % (MEDIA_QUIP, quip)
+    quip = is_reply_quip(text, has_media, is_reply, channel)
+    if quip:
+        return False, "%s («%s»)" % (REPLY_QUIP, quip)
     # Звіряємо і сирий текст, і текст без розмітки. Сирий потрібен, бо
     # «send.monobank» сидить у href; текст без розмітки — бо фразу рве тег:
     # «УВАГА,ЗАЛИШИЛОСЯ</b> <b>ЗІБРАТИ 10 000 ГРН» стоп-словом «залишилося
@@ -1408,6 +1468,8 @@ def fetch_channel(channel):
             "duration": dur.get_text(strip=True) if dur else "",
             "link": "https://t.me/%s/%s" % (channel, pid),
             "when": when.get("datetime") if when else "",
+            # Відповідь на інший пост: t.me показує над текстом цитату того допису.
+            "reply": bool(box.select_one(".tgme_widget_message_reply")),
         })
     posts.sort(key=lambda p: p["id"])
     return title, posts
@@ -2339,7 +2401,8 @@ def check_edits(channel, posts, title=""):
         # читачам. Не пройшла — у читача лишається версія, що вже пішла;
         # відбиток оновлюємо, щоб не звіряти ту саму правку кожну зміну.
         ok, why = passes_filters(post.get("text"),
-                                 bool(post.get("photo") or post.get("video")), channel)
+                                 bool(post.get("photo") or post.get("video")), channel,
+                                 post.get("reply", False))
         if not ok:
             log.info("%s/%s: правку не несемо (%s)", channel, post["id"], why)
             with db() as c:
@@ -2572,7 +2635,8 @@ def round_trip():
             fresh = fresh[-config.MAX_PER_ROUND:]
 
         for post in revived + fresh:
-            ok, why = passes_filters(post["text"], bool(post["photo"] or post["video"]), ch)
+            ok, why = passes_filters(post["text"], bool(post["photo"] or post["video"]), ch,
+                                     post.get("reply", False))
             if not ok:
                 log.info("пропуск %s/%s: %s", ch, post["id"], why)
                 # Мем теж чекає: канал буває дописує новину під картинку пізніше.
@@ -3110,6 +3174,7 @@ def main():
             if left <= config.POLL_SECONDS:
                 break
             time.sleep(config.POLL_SECONDS)
+        compact_db()
         log.info("зміну відпрацьовано: %s обходів за %.0f хв", n, minutes)
         return
 

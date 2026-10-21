@@ -3193,6 +3193,88 @@ check("під мемом дописали новину — іде як нови�
 n.api, n.fetch_channel, n.broadcast, n.remember, n.sources = _r_api, _r_fetch, _r_bc, _r_rem, _r_src
 config.QUIET_HOURS = _r_quiet
 
+print("\n── Репліка-відповідь каналу (21.10.2026, «делай» п. 3) ──")
+# Тексти — живі пости з корпусу 21.10 (6775 постів, 11 каналів).
+_P = lambda t: n.cut_signature(n.cut_donation(t), "tgp_news")
+for ch, text in [
+        ("tgp_news", "Якого прогресу? Віткофф перестав говорити російською і перейшов на англійську?"),
+        ("tgp_news", "Побачимо по Starlink, розвідданим та розблокуванню ракет-перехоплювачів."),
+        ("ShrikeNews", "Будет забавно, если Маск, Хегсет или кто там причастен к нынешнему цирку, присядет за него."),
+        ("RomanShrike", "Ну а тут полный провал. Кто ж так молится? 😾"),
+        ("tgp_news", "Пропозиція Трампа надати росії гарантії безпеки на прикладі статті 5 НАТО? Звучить правдивіше.")]:
+    ok, why = n.passes_filters(_P(text), False, ch, True)
+    check("відповідь-репліка ріжеться: " + text[:28], not ok and why.startswith(n.REPLY_QUIP), why)
+    check("той самий текст НЕ відповіддю — іде: " + text[:22], n.passes_filters(_P(text), False, ch, False)[0])
+    check("та сама відповідь з фото — не ця причина: " + text[:18],
+          not n.passes_filters(_P(text), True, ch, True)[1].startswith(n.REPLY_QUIP))
+for ch, text in [
+        ("ShrikeNews", "🇰🇷 Южная Корея отзывает посла в Украине на фоне спора о разглашении информации."),
+        ("dobropillya_td", "Кількість загиблих у Новій Водолазі зросла до шести, серед них троє дітей, — ОВА"),
+        ("smolii_ukraine", "У Шевченківському районі влучання в один з енергообʼєктів. Екстрені служби прямують на місце - заявив Кличко"),
+        ("tgp_news", "У Києві двоє загиблих через удар по 25-поверхівці"),
+        ("tgp_news", "Попередження про пуски балістики по Києву від партнерів не було, - радник президента Литвин"),
+        ("smolii_ukraine", "❗️Україна «має захотіти» завершити війну з рф, – заявив Трамп."),
+        ("ShrikeNews", "Очень надеюсь, что новые системы SAMP/T NG, которые начнут к нам приезжать в 2027, покажут "
+                       "себя эффективно против баллистики. Хрен его знает, конечно.")]:
+    ok, why = n.passes_filters(_P(text), False, ch, True)
+    check("відповідь-новина не ріжеться: " + text[:30], not why.startswith(n.REPLY_QUIP), why)
+_old = config.REPLY_QUIP_MAX_LEN
+config.REPLY_QUIP_MAX_LEN = 0
+check("мутація: REPLY_QUIP_MAX_LEN = 0 вимикає правило",
+      n.passes_filters(_P("Побачимо по Starlink, розвідданим та розблокуванню ракет-перехоплювачів."), False, "tgp_news", True)[0])
+config.REPLY_QUIP_MAX_LEN = _old
+check("за замовчуванням is_reply=False — старі виклики не ріжуть",
+      n.passes_filters(_P("Побачимо по Starlink, розвідданим та розблокуванню ракет-перехоплювачів."), False, "tgp_news")[0])
+
+class _R:
+    def __init__(s, t): s.text = t
+    def raise_for_status(s): pass
+_html = ('<div class="tgme_channel_info_header_title"><span>Т</span></div>'
+         '<div class="tgme_widget_message" data-post="tgp_news/5"><div class="tgme_widget_message_reply">'
+         '<div class="tgme_widget_message_text js-message_reply_text">Віткофф заявив про прогрес…</div></div>'
+         '<div class="tgme_widget_message_text js-message_text">Якого прогресу? Віткофф перестав говорити '
+         'російською і перейшов на англійську?</div></div>'
+         '<div class="tgme_widget_message" data-post="tgp_news/6"><div class="tgme_widget_message_text '
+         'js-message_text">Віткофф заявив про прогрес на переговорах у Москві, повідомили в Білому домі.</div></div>')
+_rg, n.requests.get = n.requests.get, (lambda *a, **k: _R(_html))
+_t, _ps = n.fetch_channel("tgp_news")
+n.requests.get = _rg
+check("fetch_channel: відповідь позначено reply=True, звичайний — False",
+      [(p["id"], p["reply"]) for p in _ps] == [(5, True), (6, False)], str([(p["id"], p.get("reply")) for p in _ps]))
+check("fetch_channel: у тексті відповіді немає цитати", _ps and "прогрес…" not in _ps[0]["text"], _ps[0]["text"][:40] if _ps else "")
+
+fresh_db()
+_r_api, _r_fetch, _r_bc, _r_rem, _r_src = n.api, n.fetch_channel, n.broadcast, n.remember, n.sources
+_r_quiet, config.QUIET_HOURS = config.QUIET_HOURS, None
+_bc = []
+n.api = lambda m, **kw: {"ok": True}
+n.broadcast = lambda post, title: _bc.append(post["id"])
+n.remember = lambda ch, t: None
+with n.db() as c:
+    c.execute("INSERT INTO sources (channel, title, last_id, active) VALUES ('tgp_news','Т',4,1)")
+n.sources = lambda: [{"channel": "tgp_news", "title": "Т", "last_id": n.db().execute(
+    "SELECT last_id FROM sources WHERE channel='tgp_news'").fetchone()[0]}]
+n.fetch_channel = lambda ch: ("Т", [dict(p, photo=None, video=False) for p in _ps])
+n.round_trip()
+check("round_trip: репліку-відповідь не шле, новину поруч — шле", _bc == [6], str(_bc))
+n.api, n.fetch_channel, n.broadcast, n.remember, n.sources = _r_api, _r_fetch, _r_bc, _r_rem, _r_src
+config.QUIET_HOURS = _r_quiet
+
+print("\n── Стиснення бази наприкінці зміни (21.10.2026, п. 4) ──")
+fresh_db()
+with n.db() as c:
+    c.executemany("INSERT INTO seen (key, ts) VALUES (?, ?)", [("k%s" % i + "x" * 900, 1) for i in range(3000)])
+with n.db() as c:
+    c.execute("DELETE FROM seen")
+_pc = lambda: n.db().execute("PRAGMA page_count").fetchone()[0]
+_before = _pc()
+check("порожніх сторінок понад чверть — VACUUM стискає", n.compact_db() and _pc() < _before / 3,
+      "%s → %s" % (_before, _pc()))
+check("стиснена база вдруге не чіпається", n.compact_db() is False)
+_rp, n.DB_PATH = n.DB_PATH, "/nema/takoyi/teky/novynar.db"
+check("збій стискання не валить зміну (False, без винятку)", n.compact_db() is False)
+n.DB_PATH = _rp
+
 print("\n" + "═" * 62)
 print("  ПІДСУМОК: %s правильно, %s помилок" % (PASS, FAIL))
 print("═" * 62)
