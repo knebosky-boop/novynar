@@ -815,10 +815,18 @@ def cut_donation(text):
     if not text:
         return text
     lines = text.split("\n")
-    cut = next((i for i, ln in enumerate(lines)
-                if ln.strip() and (is_fundraising(ln) or footer_mark(ln))), None)
+    marks = [(is_fundraising(ln) or footer_mark(ln)) if ln.strip() else None
+             for ln in lines]
+    cut = next((i for i, m in enumerate(marks) if m), None)
     if not cut:                      # None або 0 — підвалу немає, або він на початку
         return text
+    # Рядок мети («Мета: 100 000 грн») — підвал, і обрізка починається з нього. Але
+    # м'які візерунки тіла нижче мають бачити все, що стоїть над справжніми
+    # реквізитами: між метою і банкою буває «репост вітається» чи «загальна сума»,
+    # і без цього рядка тіло-збір на 400+ знаків ішло б новиною (23.10.2026).
+    goal = getattr(config, "GOAL_LINE_PATTERN", None)
+    soft_end = next((i for i, m in enumerate(marks) if m and m != goal), None)
+    head_soft = "\n".join(lines[:soft_end]) if soft_end else text
     # Підводку до реквізитів теж прибираємо: вона частина підвалу, а не новини.
     def back(i):
         """Індекс попереднього НЕпорожнього рядка (порожні між абзацами не рахуємо)."""
@@ -847,7 +855,7 @@ def cut_donation(text):
         return text                  # новини під підвалом немає
     if whole and body < getattr(config, "DONATION_BODY_SHARE", 0.4) * whole:
         return text                  # підвал більший за саму новину
-    if body_is_fundraising(head):
+    if body_is_fundraising(head_soft):
         return text                  # тіло і Є збором — хай ріже passes_filters
     return close_tags(head)
 
