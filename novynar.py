@@ -1071,6 +1071,37 @@ def is_aid_notice(text):
     return False
 
 
+def is_outage_notice(text):
+    """Графік відключень світла: оголошення про режим енергосистеми.
+
+    26.10.2026, вказівка судді «Новинар прибери новини з графіком відключення світла».
+    Ознака — зв'язка з OUTAGE_PATTERNS у тексті про електрику (OUTAGE_CONTEXT); слово
+    «графік» саме по собі нічого не ріже. Лишаються: звістка про атаку, у якій атаку
+    названо раніше за режим відключень (OUTAGE_ATTACK_EXEMPT), пост про жертви і довга
+    аналітика, де режим згадано не на початку. Повертає збіг або порожній рядок.
+    """
+    vis = re.sub(r"\s+", " ", visible(text)).lower()
+    if not re.search(getattr(config, "OUTAGE_CONTEXT", r"$^"), vis):
+        return ""
+    best = None
+    for name, p in getattr(config, "OUTAGE_PATTERNS", []):
+        m = re.search(p, vis)
+        if m and (best is None or m.start() < best[1].start()):
+            best = (name, m)
+    if not best:
+        return ""
+    name, m = best
+    if is_casualty_report(text):
+        return ""
+    if name in getattr(config, "OUTAGE_ATTACK_EXEMPT", ()) and \
+            re.search(getattr(config, "OUTAGE_ATTACK", r"$^"), vis[:m.start()]):
+        return ""
+    if bare_len(text) > getattr(config, "OUTAGE_LONG_LEN", 600) and \
+            m.start() > getattr(config, "OUTAGE_HEAD", 250):
+        return ""
+    return m.group(0).strip()
+
+
 def is_statement(text):
     """Офіційна заява: дієслово мовлення І названий той, хто говорить.
 
@@ -1131,6 +1162,7 @@ def is_letterless(text):
 
 
 MEDIA_QUIP = "мем під фото"
+OUTAGE = "графік відключень світла"   # причина відмови для is_outage_notice()
 
 
 def is_media_quip(text, has_media, channel=None):
@@ -1327,6 +1359,9 @@ def passes_filters(text, has_media, channel=None, is_reply=False):
     aid = is_aid_notice(text)
     if aid:
         return False, "допомога для ВПО («%s»)" % aid
+    outage = is_outage_notice(text)
+    if outage:
+        return False, "%s («%s»)" % (OUTAGE, outage)
     caption = is_photo_caption(text, has_media, channel)
     if caption:
         return False, "підпис під фото («%s»)" % caption
