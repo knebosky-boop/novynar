@@ -3452,6 +3452,70 @@ check("правка, що додає графік до вже надіслано
       not n.passes_filters(_prod("Укренерго: завтра в усіх регіонах діятимуть графіки погодинних відключень "
                                  "з 17:00 до 22:00 обсягом до однієї черги.", "tgp_news"), True, "tgp_news")[0])
 
+# ─────────────────────────  01.11.2026: «знову в новинарі збір»  ─────────────────────────
+block("01.11.2026 — «знову в новинарі збір»: yigal_levin/103031 і відповідь tgp_news/123479 на власний збір")
+# Тексти — живі пости (t.me, 01.11.2026), обидва пішли читачам 15:51 і 15:55.
+def _konv(raw, ch):
+    """Конвеєр прода: підвал збору, потім підпис (як у fetch_channel)."""
+    return n.cut_signature(n.cut_donation(raw), ch)
+
+LEVIN_14 = "<i><b>☝🏻</b></i> Друзья, продолжаем наш сбор для 14-й ОМБр."
+_v = n.passes_filters(_konv(LEVIN_14, "yigal_levin"), False, "yigal_levin")
+check("103031 «продолжаем наш сбор для 14-й ОМБр.» — не доходить (хвіст збору)",
+      not _v[0] and _v[1].startswith("хвіст збору"), _v[1])
+TGP_KARTY = ("А тепер накиньтеся на цю банку збору та рознесіть її, бо хоч хто б виграв чи пограв вибори в будь-якій "
+             "країні світу, єдиний наш гарант безпеки це Сили оборони України. \n\nСаме вони мають ті карти, про які "
+             "постійно торочить рудий дід. У якого після 3 листопада, будемо сподіватися, власних карт майже не "
+             "залишиться, тільки костюм.")
+TGP_TSYTATA = ('🎯 Ціль: 382 000.00 ₴\n\n🏦 Посилання на Банку\n<a href="https://send.monobank.ua/jar/4WHzcgzKJh">'
+               "https://send.monobank.ua/jar/4WHzcgzKJh</a>\n\n💳 Номер картки Банки\n4874 1000 3421 8084")
+_v = n.passes_filters(_konv(TGP_KARTY, "tgp_news"), False, "tgp_news", True, TGP_TSYTATA)
+check("123479 відповіддю на збір — не доходить", not _v[0], _v[1])
+_v = n.passes_filters(_konv(TGP_KARTY, "tgp_news"), False, "tgp_news")
+check("123479 і без цитати — «банку збору» = збір грошей", not _v[0] and _v[1] == "збір грошей", _v[1])
+_INSHA = TGP_KARTY.replace("накиньтеся на цю банку збору та рознесіть її", "підтримайте хлопців")
+_v = n.passes_filters(_konv(_INSHA, "tgp_news"), False, "tgp_news", True, TGP_TSYTATA)
+check("відповідь на збір без слова «банка» — ріже цитата («%s»)" % n.REPLY_FUNDRAISING,
+      not _v[0] and _v[1].startswith(n.REPLY_FUNDRAISING), _v[1])
+_v = n.passes_filters(_konv(_INSHA, "tgp_news"), False, "tgp_news", True,
+                      "Зеленський провів нараду зі Ставкою щодо ситуації на фронті.")
+check("той самий текст відповіддю на НОВИНУ — проходить", _v[0], _v[1])
+_v = n.passes_filters(_konv(_INSHA, "tgp_news"), False, "tgp_news", False, TGP_TSYTATA)
+check("цитата без позначки «відповідь» не рахується", not _v[1].startswith(n.REPLY_FUNDRAISING), _v[1] or "проходить")
+check("цитата-новина з «Мета: вийти на кордон» — не збір",
+      n.is_reply_to_fundraising("Мета: вийти на кордон 1991 року. Генштаб пояснив план.") is None)
+check("цитата «🎯 Ціль: 382 000.00 ₴» без банки — уже збір", bool(n.is_reply_to_fundraising("🎯 Ціль: 382 000.00 ₴")))
+# Розбір HTML: цитату відповіді беремо окремо від власного тексту.
+_q_html = """
+<div class="tgme_widget_message" data-post="tgp_news/123479">
+  <a class="tgme_widget_message_reply user-color-default tgme_widget_message_reply_quote" href="https://t.me/tgp_news/123477">
+    <div class="tgme_widget_message_text js-message_reply_text" dir="auto">🎯 Ціль: 382 000.00 ₴<br/><br/>🏦 Посилання на Банку<br/>https://send.monobank.ua/jar/4WHzcgzKJh</div>
+  </a>
+  <div class="tgme_widget_message_text js-message_text" dir="auto">А тепер накиньтеся на цю банку збору та рознесіть її.</div>
+</div>"""
+_box = _BS(_q_html, "lxml").select_one(".tgme_widget_message")
+check("reply_quote бере цитату", "Ціль: 382 000.00" in n.reply_quote(_box), n.reply_quote(_box)[:40])
+check("власний текст — без цитати", "Ціль" not in n.clean_html(n.message_text_node(_box)))
+check("пост без відповіді — цитата порожня",
+      n.reply_quote(_BS('<div class="tgme_widget_message"><div class="tgme_widget_message_text js-message_text">'
+                         'Новина.</div></div>', "lxml").select_one(".tgme_widget_message")) == "")
+# Короткі пости: збір — ріжемо, новину — ні.
+for _s in ["Продовжуємо наш збір на дрони, залишилось трохи.", "Збір для 47 бригади: потрібні ще дві «Мавіки».",
+           "Наш збір триває, дякуємо всім.", "Продолжаем сбор для ребят на передке."]:
+    check("короткий «%s» — хвіст збору" % _s[:34], bool(n.is_fundraising_tail(_s) or n.is_fundraising(_s)))
+for _s in ["Наш збір інформації про удари триває вже другий тиждень.",
+           "Продовжуємо збір підписів під петицією про підвищення пенсій військовим.",
+           "Військовий збір для ФОП зросте з 1 січня.", "Збір для митного оформлення авто подорожчає.",
+           "Триває збір врожаю: аграрії Дніпропетровщини намолотили 2 млн тонн."]:
+    check("коротка новина «%s» — не хвіст збору" % _s[:34], not n.is_fundraising_tail(_s), n.is_fundraising_tail(_s) or "")
+# «Банка збору» і заклик до банки — збір; «банк крові» і банк-установа — новина.
+check("«закиньте в банку хоч 50 гривень» — збір", bool(n.is_fundraising("Закиньте в банку хоч 50 гривень.")))
+check("«рознесімо цю банку до вечора» — збір", bool(n.is_fundraising("Рознесімо цю банку до вечора!")))
+for _s in ["Закликаємо поповнити банк крові: донорів чекають щодня з 8:00 до 13:00.",
+           "НБУ вивів з ринку банк «Конкорд», вкладникам поверне кошти ФГВФО.",
+           "Поповніть запас банки консервації на зиму — поради господиням."]:
+    check("«%s» — не збір" % _s[:34], not n.is_fundraising(_s), n.is_fundraising(_s) or "")
+
 print("\n" + "═" * 62)
 print("  ПІДСУМОК: %s правильно, %s помилок" % (PASS, FAIL))
 print("═" * 62)

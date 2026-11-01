@@ -764,6 +764,27 @@ def is_support_plea(text):
     return None
 
 
+REPLY_FUNDRAISING = "відповідь на збір"
+
+
+def is_reply_to_fundraising(quote):
+    """Чи відповідає пост на збір: у цитаті над ним — банка, картка, «Ціль: 382 000 ₴».
+
+    Канал дає збір із реквізитами (його ріже is_fundraising), а слідом — відповідь на нього без
+    адреси: 01.11.2026 tgp_news/123479 «А тепер накиньтеся на цю банку збору та рознесіть її…»
+    пішов читачам, бо реквізити стояли лише в цитаті (`js-message_reply_text`), а її бот не читав.
+    Цитата — це ПОЧАТОК допису, на який відповідають: підвал під довгою новиною в неї не
+    потрапляє, тож відповідь на новину з донатним підвалом сюди не доходить.
+    Повертає ознаку (до 40 знаків) або None."""
+    if not quote:
+        return None
+    pat = is_fundraising(quote)
+    if pat:
+        m = re.search(pat, visible(quote).lower(), re.IGNORECASE)
+        return re.sub(r"\s+", " ", m.group(0)).strip()[:40] if m else "реквізити"
+    return next((footer_mark(ln) for ln in quote.split("\n") if ln.strip() and footer_mark(ln)), None)
+
+
 def is_channel_promo(text):
     """Реклама чужого каналу: «рекомендую канал», «раджу підписатися».
 
@@ -1305,7 +1326,7 @@ def is_gambling_ad(low, vis, text):
     return "%s + %s" % (word, cue) if cue else None
 
 
-def passes_filters(text, has_media, channel=None, is_reply=False):
+def passes_filters(text, has_media, channel=None, is_reply=False, reply_text=""):
     if is_service(text):
         return False, "службова позначка"
     if is_letterless(text):
@@ -1344,6 +1365,10 @@ def passes_filters(text, has_media, channel=None, is_reply=False):
     tail = is_fundraising_tail(text)
     if tail:
         return False, "хвіст збору («%s»)" % tail
+    # Відповідь каналу на власний збір: реквізити лише в цитаті над постом (01.11.2026).
+    quote = is_reply_to_fundraising(reply_text) if is_reply else None
+    if quote:
+        return False, "%s («%s»)" % (REPLY_FUNDRAISING, quote)
     plea = is_support_plea(text)
     if plea:
         return False, "прохання про підтримку («%s»)" % plea
@@ -1448,6 +1473,15 @@ def message_text_node(box):
             or box.select_one(".tgme_widget_message_text:not(.js-message_reply_text)"))
 
 
+def reply_quote(box):
+    """Цитата допису, на який відповідає пост, — або порожньо.
+
+    Власний текст поста її не містить (message_text_node), а відповідь на збір без неї не
+    впізнати: реквізити бувають лише в цитаті (tgp_news/123479, 01.11.2026)."""
+    node = box.select_one(".tgme_widget_message_reply .js-message_reply_text")
+    return clean_html(node) if node else ""
+
+
 def fetch_channel(channel):
     """Повертає (назва каналу, список постів). Пости — від старіших до новіших."""
     url = "https://t.me/s/%s" % channel
@@ -1513,6 +1547,7 @@ def fetch_channel(channel):
             "when": when.get("datetime") if when else "",
             # Відповідь на інший пост: t.me показує над текстом цитату того допису.
             "reply": bool(box.select_one(".tgme_widget_message_reply")),
+            "reply_text": reply_quote(box),
         })
     posts.sort(key=lambda p: p["id"])
     return title, posts
@@ -2445,7 +2480,7 @@ def check_edits(channel, posts, title=""):
         # відбиток оновлюємо, щоб не звіряти ту саму правку кожну зміну.
         ok, why = passes_filters(post.get("text"),
                                  bool(post.get("photo") or post.get("video")), channel,
-                                 post.get("reply", False))
+                                 post.get("reply", False), post.get("reply_text", ""))
         if not ok:
             log.info("%s/%s: правку не несемо (%s)", channel, post["id"], why)
             with db() as c:
@@ -2679,7 +2714,7 @@ def round_trip():
 
         for post in revived + fresh:
             ok, why = passes_filters(post["text"], bool(post["photo"] or post["video"]), ch,
-                                     post.get("reply", False))
+                                     post.get("reply", False), post.get("reply_text", ""))
             if not ok:
                 log.info("пропуск %s/%s: %s", ch, post["id"], why)
                 # Мем теж чекає: канал буває дописує новину під картинку пізніше.
