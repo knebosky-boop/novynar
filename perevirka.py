@@ -1243,9 +1243,9 @@ def cmd(text, uid=1, uname="kate"):
 check("/status відповідає", "Новинар" in cmd("/status"))
 check("/help показує команди", "/add" in cmd("/help"))
 before = len(n.sources())
-check("/add додає канал", "Додав" in cmd("/add @tsn_ua") and len(n.sources()) == before + 1)
+check("/add додає канал", "Додав" in cmd("/add @durov") and len(n.sources()) == before + 1)
 check("/add помічає дурницю", "не" in cmd("/add @qwerty_nemaye_takogo_2026").lower())
-check("/del прибирає", "Прибрав" in cmd("/del @tsn_ua") and len(n.sources()) == before)
+check("/del прибирає", "Прибрав" in cmd("/del @durov") and len(n.sources()) == before)
 check("/allow впускає", "Впустив" in cmd("/allow @petro") and n.is_allowed(9, "petro"))
 check("/deny відрізає", "Відрізав" in cmd("/deny @petro") and not n.is_allowed(9, "petro"))
 
