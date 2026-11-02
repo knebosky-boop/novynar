@@ -1062,6 +1062,11 @@ def is_service_ad(text):
             m = re.search(p, head)
             if m:
                 return m.group(0).strip()
+        # Реклама в хвості статті (02.11.2026): заголовок чистий, продавець — у кінці.
+        for p in getattr(config, "SERVICE_AD_ANYWHERE", []):
+            m = re.search(p, low)
+            if m:
+                return m.group(0).strip()
     # Голий телефон замість новини — «- 0509167723» під фотографією: MIN_LENGTH
     # його не бере, бо картинка поріг довжини обходить.
     if phone and bare_len(text) < getattr(config, "SERVICE_AD_PHONE_MAX", 60):
