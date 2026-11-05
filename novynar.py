@@ -1056,7 +1056,8 @@ def is_service_ad(text):
     nick = re.search(r"@[a-zA-Z_][a-zA-Z0-9_]{3,}", vis)
     call = re.search(r"\b(зв'?язатися|связаться|звоните|дзвоніть|телефонуйте|звертайтесь|"
                      r"обращайтесь|пишіть|пишите|напишіть|напишите|замовити|заказать)\b", low)
-    if phone or nick or call:
+    contact = any(re.search(p, low) for p in getattr(config, "SERVICE_AD_CONTACT", []))
+    if phone or nick or call or contact:
         head = low[:getattr(config, "SERVICE_AD_HEAD", 250)]
         for p in pats:
             m = re.search(p, head)
@@ -1648,19 +1649,29 @@ def grab_photo(url):
     """Telegram не ходить по адресах каналу сам — тягнемо картинку своїми руками."""
     if not url:
         return None
-    try:
-        r = requests.get(url, headers={"User-Agent": UA, "Referer": "https://t.me/"},
-                         timeout=30)
-        r.raise_for_status()
-        if not r.headers.get("content-type", "").startswith("image"):
-            return None
-        if len(r.content) > 9 * 1024 * 1024:      # ліміт Telegram на фото
-            log.info("картинка завелика (%s КБ) — шлю без неї", len(r.content) // 1024)
-            return None
-        return r.content
-    except Exception as e:
-        log.info("картинка не завантажилась: %s", e)
-        return None
+    # 05.11.2026: CDN telesco.pe віддає 500, а той самий адрес за кілька годин — 200
+    # (dobropillya_td/72472, yigal_levin/103166 пішли без картинки). 404 не повторюємо:
+    # адреса справді немає. Паузи — config.PHOTO_RETRY_PAUSES.
+    pauses = list(getattr(config, "PHOTO_RETRY_PAUSES", [])) + [None]
+    for pause in pauses:
+        try:
+            r = requests.get(url, headers={"User-Agent": UA, "Referer": "https://t.me/"},
+                             timeout=30)
+            r.raise_for_status()
+            if not r.headers.get("content-type", "").startswith("image"):
+                return None
+            if len(r.content) > 9 * 1024 * 1024:      # ліміт Telegram на фото
+                log.info("картинка завелика (%s КБ) — шлю без неї", len(r.content) // 1024)
+                return None
+            return r.content
+        except Exception as e:
+            code = getattr(getattr(e, "response", None), "status_code", None)
+            if pause is None or (code is not None and code < 500):
+                log.info("картинка не завантажилась: %s", e)
+                return None
+            log.info("картинка: збій %s, повтор за %s с", code or type(e).__name__, pause)
+            time.sleep(pause)
+    return None
 
 
 def resolve_video(post):
