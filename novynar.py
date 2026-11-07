@@ -1705,22 +1705,33 @@ def grab_video(url):
     if not url:
         return None
     limit = getattr(config, "VIDEO_MAX_MB", 45)
-    try:
-        head = requests.head(url, headers={"User-Agent": UA, "Referer": "https://t.me/"},
-                             timeout=25, allow_redirects=True)
-        size = int(head.headers.get("content-length") or 0)
-        if size and size > limit * 1048576:
-            log.info("відео завелике (%.1f МБ) — шлю обкладинку", size / 1048576.0)
-            return None
-        r = requests.get(url, headers={"User-Agent": UA, "Referer": "https://t.me/"},
-                         timeout=180)
-        r.raise_for_status()
-        if len(r.content) > limit * 1048576:
-            return None
-        return r.content
-    except Exception as e:
-        log.info("відео не завантажилось: %s", e)
-        return None
+    # 07.11.2026: той самий CDN 500, що й у картинок (dobropillya_td/72547, yigal_levin/103251
+    # пішли обкладинкою). Повторюємо 5xx і обрив; 404 і тайм-аут — ні (тайм-аут уже 180 с,
+    # ще два з'їли б пів зміни). Паузи — config.VIDEO_RETRY_PAUSES, [] = одна спроба.
+    pauses = list(getattr(config, "VIDEO_RETRY_PAUSES", [])) + [None]
+    for pause in pauses:
+        try:
+            head = requests.head(url, headers={"User-Agent": UA, "Referer": "https://t.me/"},
+                                 timeout=25, allow_redirects=True)
+            size = int(head.headers.get("content-length") or 0)
+            if size and size > limit * 1048576:
+                log.info("відео завелике (%.1f МБ) — шлю обкладинку", size / 1048576.0)
+                return None
+            r = requests.get(url, headers={"User-Agent": UA, "Referer": "https://t.me/"},
+                             timeout=180)
+            r.raise_for_status()
+            if len(r.content) > limit * 1048576:
+                return None
+            return r.content
+        except Exception as e:
+            code = getattr(getattr(e, "response", None), "status_code", None)
+            if (pause is None or (code is not None and code < 500)
+                    or isinstance(e, requests.Timeout)):
+                log.info("відео не завантажилось: %s", e)
+                return None
+            log.info("відео: збій %s, повтор за %s с", code or type(e).__name__, pause)
+            time.sleep(pause)
+    return None
 
 
 def send_media(uid, method, field, blob, filename, mime, caption, file_id=None):

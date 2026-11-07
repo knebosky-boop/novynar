@@ -3617,6 +3617,45 @@ try:
 finally:
     n.requests.get, n.time.sleep, config.PHOTO_RETRY_PAUSES = _get_real, _sleep_real, _pauses_real
 
+# ─────────────────────────  07.11.2026: повтор відео  ─────────────────────────
+block("07.11.2026 — повтор відео при збої CDN (5xx, обрив); 404 і тайм-аут не повторюємо")
+_get_real, _head_real, _sleep_real, _vp_real = n.requests.get, n.requests.head, n.time.sleep, config.VIDEO_RETRY_PAUSES
+_паузи = []
+n.time.sleep = _паузи.append
+n.requests.head = lambda url, **k: _відповідь(200, b"", "video/mp4")
+def _сценарій_в(коди):
+    _лишилось = list(коди)
+    _виклики = []
+    def _get(url, **k):
+        _виклики.append(url)
+        _код = _лишилось.pop(0)
+        if _код is None:
+            raise n.requests.ConnectionError("обрив")
+        if _код == "timeout":
+            raise n.requests.ReadTimeout("довго")
+        return _відповідь(_код, b"MP4", "video/mp4")
+    n.requests.get = _get
+    del _паузи[:]
+    return _виклики
+try:
+    _в = _сценарій_в([200])
+    check("відео з першого разу — без пауз", _grabv_real("u") == b"MP4" and len(_в) == 1 and not _паузи)
+    _в = _сценарій_в([500, 200])
+    check("відео: 500, потім 200 — є", _grabv_real("u") == b"MP4" and len(_в) == 2 and _паузи == [3])
+    _в = _сценарій_в([None, 502, 200])
+    check("відео: обрив і 502, потім 200 — є", _grabv_real("u") == b"MP4" and len(_в) == 3 and _паузи == [3, 10])
+    _в = _сценарій_в([500, 500, 500])
+    check("відео: три рази 500 — обкладинка, більше не пробує", _grabv_real("u") is None and len(_в) == 3)
+    _в = _сценарій_в([404])
+    check("відео: 404 не повторюємо", _grabv_real("u") is None and len(_в) == 1 and not _паузи)
+    _в = _сценарій_в(["timeout"])
+    check("відео: тайм-аут не повторюємо", _grabv_real("u") is None and len(_в) == 1 and not _паузи)
+    config.VIDEO_RETRY_PAUSES = []
+    _в = _сценарій_в([500])
+    check("відео: вимикач [] — одна спроба, як до 07.11", _grabv_real("u") is None and len(_в) == 1)
+finally:
+    n.requests.get, n.requests.head, n.time.sleep, config.VIDEO_RETRY_PAUSES = _get_real, _head_real, _sleep_real, _vp_real
+
 print("\n" + "═" * 62)
 print("  ПІДСУМОК: %s правильно, %s помилок" % (PASS, FAIL))
 print("═" * 62)
