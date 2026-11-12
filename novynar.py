@@ -123,20 +123,15 @@ def init_db():
         CREATE TABLE IF NOT EXISTS state (
             k TEXT PRIMARY KEY, v TEXT
         );
-        CREATE TABLE IF NOT EXISTS mirror (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT, ts INTEGER
-        );
         CREATE TABLE IF NOT EXISTS bare_held (
             channel TEXT, post_id INTEGER, ts INTEGER,
             PRIMARY KEY (channel, post_id)
         );
-        CREATE TABLE IF NOT EXISTS mirror_ver (
-            channel TEXT, post_id INTEGER, body TEXT, ts INTEGER
-        );
-        CREATE TABLE IF NOT EXISTS mirror_wait (
-            channel TEXT, post_id INTEGER, items TEXT, body TEXT, ts INTEGER,
-            PRIMARY KEY (channel, post_id)
-        );
+        -- 12.11.2026 міст WhatsApp розібрано: його таблиці й стан стираємо
+        DROP TABLE IF EXISTS mirror;
+        DROP TABLE IF EXISTS mirror_ver;
+        DROP TABLE IF EXISTS mirror_wait;
+        DELETE FROM state WHERE k LIKE 'mirror%';
         """)
 
 
@@ -1616,8 +1611,6 @@ def api(method, **params):
             r = requests.post(API + method, data=params, timeout=60)
             j = r.json()
             if j.get("ok"):
-                if method == "sendMessage":
-                    mirror_note(params.get("chat_id"), j["result"])
                 return j["result"]
             desc = j.get("description", "")
             if "message is not modified" in desc.lower():
@@ -1754,7 +1747,6 @@ def send_media(uid, method, field, blob, filename, mime, caption, file_id=None):
             if j.get("ok"):
                 res = j["result"]
                 LAST_MEDIA_MSG = res.get("message_id")
-                mirror_note(uid, res)
                 got = res.get(field) or res.get("document")
                 if isinstance(got, list):
                     got = got[-1]
@@ -1960,175 +1952,6 @@ def close_tags(s):
 
 LAST_MEDIA_MSG = None       # номер останнього повідомлення з файлом
 
-# ── Дзеркало для моста WhatsApp (27.09.2026) ────────────────────────────────
-# Раніше міст на маку читав чат власниці з ботом під її акаунтом Telegram.
-# Тепер бот сам віддає серверу моста те, що надіслав власниці: повідомлення
-# Bot API як є (текст + entities, фото/відео байтами) — по SSH-ключу, який на
-# сервері вміє лише покласти це в чергу. Сервер лежить — лишається в таблиці
-# mirror і доїжджає наступним обходом (до MIRROR_KEEP_HOURS).
-MIRROR = []
-MIRROR_UID = None
-MIRROR_KEEP_HOURS = 48
-MIRROR_MAX_FILE = 20_000_000     # getFile Bot API більше не віддає
-# Відкладені до тиші правки (mirror_hold): таблиця є й у init_db, а тут — для
-# старої бази, яку sukho.py та перевірки відкривають без init_db.
-MIRROR_WAIT_SQL = ("CREATE TABLE IF NOT EXISTS mirror_wait (channel TEXT, post_id INTEGER, "
-                   "items TEXT, body TEXT, ts INTEGER, PRIMARY KEY (channel, post_id))")
-
-
-def mirror_on():
-    return bool(getattr(config, "MIRROR_KEY", "") and getattr(config, "MIRROR_HOST", ""))
-
-
-def mirror_note(uid, res):
-    if MIRROR_UID is None or not isinstance(res, dict) or not res.get("message_id"):
-        return
-    if str(uid) == str(MIRROR_UID):
-        MIRROR.append(res)
-
-
-def mirror_file(file_id):
-    f = api("getFile", file_id=file_id)
-    if not f or not f.get("file_path"):
-        return None
-    r = requests.get("https://api.telegram.org/file/bot%s/%s" % (config.BOT_TOKEN, f["file_path"]),
-                     timeout=120)
-    return r.content if r.ok else None
-
-
-
-def mirror_pulse(ok, why=""):
-    """Зовнішній пульс сервера (аудит № 7, Б12, 09.10.2026). Сторож тиші на сервері бачить, що замовк
-    Новинар, а що ліг сам сервер — ніхто: він і є той, хто мав би сказати. Доставка дзеркала — єдиний
-    зовнішній дотик до сервера, тож рахуємо її невдачі: MIRROR_ALARM_FAILS поспіль (не частіше однієї
-    на MIRROR_ALARM_GAP_MIN хв) — лист власниці, один на весь збій; перша вдала доставка — «ожив».
-    Стан — у таблиці state: база їде між змінами через кеш Actions. Пульс доставку не ламає ніколи."""
-    try:
-        _mirror_pulse(ok, why)
-    except Exception as e:
-        log.warning("пульс сервера: %s", e)
-
-
-def _mirror_pulse(ok, why):
-    need = int(getattr(config, "MIRROR_ALARM_FAILS", 3) or 0)
-    owner_id = getattr(config, "OWNER_ID", 0)
-    now = int(time.time())
-    fails = int(get_state("mirror_fails", 0) or 0)
-    if ok:
-        if not fails:
-            return
-        since = int(get_state("mirror_fail_since", now) or now)
-        if get_state("mirror_alarm") and owner_id:
-            _pulse_say(owner_id, "✅ Сервер знову відповідає (не відповідав %s хв, з %s)."
-                       % (max(1, (now - since) // 60), datetime.fromtimestamp(since).strftime("%d.%m %H:%M")))
-        for k in ("mirror_fails", "mirror_fail_last", "mirror_fail_since", "mirror_alarm"):
-            set_state(k, "")
-        log.info("пульс сервера: доставка пройшла, лічильник невдач скинуто")
-        return
-    last = int(get_state("mirror_fail_last", 0) or 0)
-    if fails and now - last < int(getattr(config, "MIRROR_ALARM_GAP_MIN", 5)) * 60:
-        return
-    fails += 1
-    set_state("mirror_fails", fails)
-    set_state("mirror_fail_last", now)
-    if fails == 1:
-        set_state("mirror_fail_since", now)
-    log.warning("пульс сервера: доставка не пройшла (%s з %s)", fails, need or "—")
-    if need and fails >= need and not get_state("mirror_alarm") and owner_id:
-        since = int(get_state("mirror_fail_since", now) or now)
-        if _pulse_say(owner_id, "⚠️ Сервер не відповідає: %s спроби поспіль не пройшли (перша — %s).\n"
-                      "Новини Вам ідуть як завжди; під загрозою сервер — Оболонь, Практикант, ранкова "
-                      "автоматика. Причина: %s."
-                      % (fails, datetime.fromtimestamp(since).strftime("%d.%m %H:%M"), why or "невідома")):
-            set_state("mirror_alarm", now)     # не вдалось надіслати — спробуємо з наступною невдачею
-
-
-def _pulse_say(uid, text):
-    """Службовий лист власниці — повз дзеркало (воно ж саме й не доходить)."""
-    global MIRROR_UID
-    keep, MIRROR_UID = MIRROR_UID, None
-    try:
-        return api("sendMessage", chat_id=uid, text=text)
-    finally:
-        MIRROR_UID = keep
-
-
-def mirror_store(msgs):
-    import base64
-    import json
-    items = []
-    for m in msgs:
-        it = {"message_id": m["message_id"], "date": m.get("date") or int(time.time()),
-              "text": m.get("text") or m.get("caption") or "",
-              "entities": m.get("entities") or m.get("caption_entities") or []}
-        media, ext = None, ""
-        if m.get("photo"):
-            media, ext = m["photo"][-1], ".jpg"
-        elif m.get("video") or m.get("animation"):
-            media, ext = m.get("video") or m.get("animation"), ".mp4"
-        if media and (media.get("file_size") or 0) < MIRROR_MAX_FILE:
-            try:
-                blob = mirror_file(media["file_id"])
-                if blob:
-                    it["media_b64"], it["ext"] = base64.b64encode(blob).decode(), ext
-            except Exception as e:
-                log.warning("дзеркало: медіа %s не стягнулось (%s)", m["message_id"], e)
-        items.append(it)
-    with db() as c:
-        c.execute("INSERT INTO mirror (payload, ts) VALUES (?, ?)",
-                  (json.dumps({"items": items}, ensure_ascii=False), int(time.time())))
-    mirror_push()
-
-
-def mirror_push():
-    """Відвантажити на сервер усе, що чекає. Мовчки нічого не губимо: збій — лишаємо."""
-    if not mirror_on():
-        return
-    import subprocess
-    import tempfile
-    with db() as c:
-        c.execute("DELETE FROM mirror WHERE ts < ?", (int(time.time()) - MIRROR_KEEP_HOURS * 3600,))
-        rows = [dict(r) for r in c.execute("SELECT id, payload FROM mirror ORDER BY id")]
-    if not rows:
-        return
-    d = tempfile.mkdtemp(prefix="mirror-")
-    key, kh = os.path.join(d, "k"), os.path.join(d, "kh")
-    try:
-        with open(key, "w") as f:
-            f.write(config.MIRROR_KEY.strip() + "\n")
-        os.chmod(key, 0o600)
-        with open(kh, "w") as f:
-            f.write(getattr(config, "MIRROR_HOSTKEY", "") + "\n")
-        for r in rows:
-            try:
-                p = subprocess.run(
-                    ["ssh", "-i", key, "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
-                     "-o", "UserKnownHostsFile=" + kh, "-o", "StrictHostKeyChecking=yes",
-                     "-o", "ConnectTimeout=15", config.MIRROR_HOST],
-                    input=r["payload"].encode(), capture_output=True, timeout=90)
-            except Exception as e:
-                log.warning("дзеркало: сервер не відповів (%s), лишаю %s у черзі", e, len(rows))
-                mirror_pulse(False, "немає зв'язку (%s)" % type(e).__name__)
-                return
-            if p.returncode != 0:
-                err = p.stderr.decode(errors="replace")[-200:].strip()
-                log.warning("дзеркало: сервер відмовив (%s: %s), лишаю в черзі", p.returncode, err)
-                mirror_pulse(False, ("немає зв'язку" if p.returncode == 255 else
-                                     "сервер відмовив, код %s" % p.returncode) + (": " + err if err else ""))
-                return
-            with db() as c:
-                c.execute("DELETE FROM mirror WHERE id = ?", (r["id"],))
-            log.info("дзеркало: віддано серверу %s", p.stdout.decode(errors="replace").strip())
-        mirror_pulse(True)
-    finally:
-        for f in (key, kh):
-            try:
-                os.remove(f)
-            except OSError:
-                pass
-        os.rmdir(d)
-
-
 def plain(text):
     """Сам текст без розмітки: Telegram час від часу віддає ті самі слова
     трохи іншими тегами, а це не виправлення каналу."""
@@ -2207,140 +2030,6 @@ def edit_is_big(old, new):
     return ratio < getattr(config, "EDIT_NOTE_RATIO", 0.97)
 
 
-def edit_adds_news(versions, new):
-    """Чи є в правці щось, чого міст іще не віддавав.
-
-    У WhatsApp правка — це весь пост наново, тому мірка тут інша, ніж
-    у edit_is_big: рахуємо лише слова, яких не було в ЖОДНІЙ уже відданій
-    мосту версії. 04.10.2026 ShrikeNews/33034 пішов Миколі тричі
-    (переформульоване речення, переставлений абзац), а 33041 удруге —
-    канал стер дописане речення, і пішов дослівно перший текст. Нове число
-    («загинули 3» → «5») несемо завжди: це саме те виправлення, заради
-    якого правку й варто нести."""
-    seen = set()
-    for v in versions:
-        seen.update(plain(v).split())
-    fresh = [w for w in plain(new).split() if w not in seen]
-    if any(ch.isdigit() for w in fresh for ch in w):
-        return True
-    # Те саме слово в іншій формі — не новина (08.10.2026, ShrikeNews/33117:
-    # «насыпал персональных санкций … организаций» → «согласовал персональные
-    # санкции … компаний» пішло Миколі повтором). Слово рахуємо свіжим, лише
-    # коли нема жодного побаченого з тим самим початком; числа — як і були, цілком.
-    k = getattr(config, "MIRROR_EDIT_STEM", 5)
-    if k:
-        stems = {w[:k] for w in seen}
-        fresh = [w for w in fresh if w[:k] not in stems]
-    return sum(len(w) + 1 for w in fresh) >= getattr(config, "MIRROR_EDIT_NEW_CHARS", 30)
-
-
-def mirror_versions(row):
-    """Усі версії поста, що вже пішли мосту: перша — та, що пішла новиною."""
-    with db() as c:
-        c.execute("CREATE TABLE IF NOT EXISTS mirror_ver "
-                  "(channel TEXT, post_id INTEGER, body TEXT, ts INTEGER)")
-        got = [r["body"] for r in c.execute(
-            "SELECT body FROM mirror_ver WHERE channel = ? AND post_id = ? ORDER BY ts",
-            (row["channel"], row["post_id"]))]
-    return got or [row["body"] or ""]
-
-
-def mirror_remember(row, versions, body=None):
-    """Записуємо, що вже має міст. Без body — лише першу версію: правку не
-    понесли, а sent.body зараз перепишеться на неї, і без цього запису
-    наступна правка звірялась би не з тим, що Микола бачив."""
-    now = int(time.time())
-    with db() as c:
-        if not c.execute("SELECT 1 FROM mirror_ver WHERE channel = ? AND post_id = ?",
-                         (row["channel"], row["post_id"])).fetchone():
-            for v in versions:
-                c.execute("INSERT INTO mirror_ver VALUES (?,?,?,?)",
-                          (row["channel"], row["post_id"], v, now))
-        if body is not None:
-            c.execute("INSERT INTO mirror_ver VALUES (?,?,?,?)",
-                      (row["channel"], row["post_id"], body, now))
-
-
-def mirror_hold(row, versions, body, msgs, fresh=False):
-    """Правку мосту не віддаємо одразу, а відкладаємо до тиші.
-
-    Автор часто дописує пост шматками, і кожен шматок ішов Миколі всім
-    постом наново: 04.10.2026 ShrikeNews/33054 — п'ять разів за годину,
-    06.10 ShrikeNews/33088 — тричі за сім хвилин. Тепер кожна правка лише
-    оновлює відкладене, а мосту йде одна, остання версія, коли пост
-    MIRROR_EDIT_QUIET_MIN хвилин не мінявся (mirror_release; вказівка судді
-    06.10.2026). Чи нести, вирішуємо там само, по останній версії: відкат
-    до того, що Микола вже бачив, так і лишиться мовчки.
-
-    msgs — повідомлення власниці з цією версією: виправлені на місці
-    (номер підмінить mirror_edit_items) або, якщо fresh, надіслані наново."""
-    import json
-    mirror_remember(row, versions)      # що має міст — поки sent.body не переписали
-    now = int(time.time())
-    with db() as c:
-        c.execute(MIRROR_WAIT_SQL)
-        if msgs:
-            c.execute("INSERT OR REPLACE INTO mirror_wait (channel, post_id, items, body, ts) "
-                      "VALUES (?,?,?,?,?)",
-                      (row["channel"], row["post_id"],
-                       json.dumps({"fresh": bool(fresh), "msgs": msgs}, ensure_ascii=False),
-                       body, now))
-            held = True
-        else:
-            # Власниці цю версію не віддали (на місці не лягла, а дрібна) —
-            # нести нема чого, але пост досі міняється: тишу рахуємо заново.
-            held = c.execute("UPDATE mirror_wait SET ts = ? WHERE channel = ? AND post_id = ?",
-                             (now, row["channel"], row["post_id"])).rowcount > 0
-    if held:
-        log.info("дзеркало: правку %s/%s відклав до тиші (%s хв)", row["channel"],
-                 row["post_id"], getattr(config, "MIRROR_EDIT_QUIET_MIN", 60))
-
-
-def mirror_release(now=None):
-    """Відлежані правки — мосту, коли пост MIRROR_EDIT_QUIET_MIN хвилин не мінявся.
-
-    Несемо лише останню версію і лише тоді, коли в ній є нове проти всього,
-    що міст уже віддав (edit_adds_news). Відкладене лежить у базі, тож
-    переживає кінець зміни на GitHub і доїжджає наступною. Пауза власниці
-    (/pause) тримає й правки."""
-    if paused or not mirror_on():
-        return 0
-    import json
-    now = int(time.time() if now is None else now)
-    quiet = int(getattr(config, "MIRROR_EDIT_QUIET_MIN", 60)) * 60
-    with db() as c:
-        c.execute(MIRROR_WAIT_SQL)
-        # Бот стояв добу — стару правку вже не несемо, як і check_edits по EDIT_HOURS.
-        c.execute("DELETE FROM mirror_wait WHERE ts < ?",
-                  (now - int(getattr(config, "EDIT_HOURS", 24)) * 3600,))
-        ripe = [dict(r) for r in c.execute(
-            "SELECT * FROM mirror_wait WHERE ts <= ? ORDER BY ts", (now - quiet,))]
-    gone = 0
-    for w in ripe:
-        ch, pid = w["channel"], w["post_id"]
-        with db() as c:
-            c.execute("DELETE FROM mirror_wait WHERE channel = ? AND post_id = ?", (ch, pid))
-            have = [r["body"] for r in c.execute(
-                "SELECT body FROM mirror_ver WHERE channel = ? AND post_id = ? ORDER BY ts",
-                (ch, pid))]
-        if not have:
-            log.info("дзеркало: правку %s/%s не несемо — версії моста вже стерто", ch, pid)
-            continue
-        if not edit_adds_news(have, w["body"]):
-            log.info("дзеркало: правку %s/%s не несемо — нового тексту немає", ch, pid)
-            continue
-        got = json.loads(w["items"])
-        msgs = got["msgs"] if got.get("fresh") else mirror_edit_items(got["msgs"])
-        try:
-            mirror_store(msgs)
-            mirror_remember({"channel": ch, "post_id": pid}, have, w["body"])
-            gone += 1
-            log.info("дзеркало: правку %s/%s віддано мосту (%s повід.)", ch, pid, len(msgs))
-        except Exception as e:
-            log.warning("дзеркало: правку не записав (%s)", e)
-    return gone
-
-
 def push_edit(row, post, title):
     """Доводимо виправлення до тих, кому новина вже пішла."""
     with db() as c:
@@ -2355,17 +2044,6 @@ def push_edit(row, post, title):
                            first_limit=int(row["first_limit"] or 4096))
     changed = edit_is_big(row["body"] or "", body)
     big = changed and getattr(config, "EDIT_NOTICE", True)
-    # Міст у WhatsApp правити надіслане не вміє, а повтор того самого
-    # message_id сервер відкидає. Тому суттєву правку того, що пішло власниці,
-    # віддаємо дзеркалу НОВИМ повідомленням (вказівка судді 03.10.2026) —
-    # не одразу, а одну, останню, коли пост годину не мінявся (06.10.2026):
-    # тут лише mirror_hold, несе mirror_release.
-    owner = getattr(config, "OWNER_ID", 0)
-    to_mirror, fresh = [], False
-    # Тут не edit_is_big: виправлене число («3» → «5») для неї дрібниця за
-    # обсягом, а Миколі без нього лишиться хибна цифра.
-    versions = (mirror_versions(row)
-                if mirror_on() and plain(row["body"] or "") != plain(body) else [])
 
     by_user = {}
     for m in msgs:
@@ -2397,8 +2075,6 @@ def push_edit(row, post, title):
                     break
                 edited.append(res)
                 time.sleep(0.3)
-        if fixed_in_place and versions and uid == owner:
-            to_mirror = list(edited)
 
         if fixed_in_place:
             if big:
@@ -2424,44 +2100,9 @@ def push_edit(row, post, title):
                           allow_sending_without_reply=True)
                 if res:
                     done += 1 if j == 0 else 0
-                    if uid == owner and versions and isinstance(res, dict):
-                        to_mirror.append(res)   # нове повідомлення — новий message_id
-                        fresh = True
                 time.sleep(0.4)
         time.sleep(config.SEND_DELAY)
-    if versions:
-        try:
-            mirror_hold(row, versions, body, to_mirror, fresh)
-        except Exception as e:
-            log.warning("дзеркало: правку не відклав (%s)", e)
     return done > 0
-
-
-def mirror_edit_items(edited):
-    """Виправлену на місці новину — мосту як нове повідомлення з позначкою.
-
-    message_id підмінюємо: справжній сервер моста вже бачив і відкине як
-    повтор. Підставний номер — від часу в мілісекундах, з 10**13 угору, щоб
-    не перетнутись із номерами Telegram і з повторною правкою того самого
-    поста. Позначку дописуємо на початок, тож зсуваємо розмітку (offset
-    у Telegram рахується в UTF-16)."""
-    mark = getattr(config, "MIRROR_EDIT_MARK", "✏️ Канал виправив новину:\n")
-    shift = len(mark.encode("utf-16-le")) // 2
-    base = 10 ** 13 + int(time.time() * 1000) * 10
-    out = []
-    for i, res in enumerate(edited):
-        if not isinstance(res, dict):
-            continue
-        it = dict(res)
-        it["message_id"] = base + i
-        it["date"] = int(time.time())
-        if i == 0:
-            key = "caption" if "caption" in it or it.get("photo") or it.get("video") else "text"
-            ents = "caption_entities" if key == "caption" else "entities"
-            it[key] = mark + (it.get(key) or "")
-            it[ents] = [dict(e, offset=e["offset"] + shift) for e in it.get(ents) or []]
-        out.append(it)
-    return out
 
 
 def check_edits(channel, posts, title=""):
@@ -2475,9 +2116,6 @@ def check_edits(channel, posts, title=""):
                   "WHERE s.channel = sent_msg.channel AND s.post_id = sent_msg.post_id "
                   "AND s.ts < ?)", (now - hours * 3600,))
         c.execute("DELETE FROM sent WHERE ts < ?", (now - hours * 3600,))
-        c.execute("CREATE TABLE IF NOT EXISTS mirror_ver "
-                  "(channel TEXT, post_id INTEGER, body TEXT, ts INTEGER)")
-        c.execute("DELETE FROM mirror_ver WHERE ts < ?", (now - hours * 3600,))
         watched = {r["post_id"]: dict(r) for r in
                    c.execute("SELECT * FROM sent WHERE channel = ?", (channel,))}
     if not watched:
@@ -2529,20 +2167,8 @@ def check_edits(channel, posts, title=""):
 
 
 def send_post(uid, post, title):
-    """Віддати новину читачеві; що пішло власниці — ще й дзеркалом на сервер моста."""
-    global MIRROR_UID
-    MIRROR.clear()
-    MIRROR_UID = uid if mirror_on() and uid == getattr(config, "OWNER_ID", 0) else None
-    try:
-        return _send_post(uid, post, title)
-    finally:
-        if MIRROR_UID is not None and MIRROR:
-            try:
-                mirror_store(list(MIRROR))
-            except Exception as e:
-                log.warning("дзеркало: не записав (%s)", e)
-        MIRROR_UID = None
-        MIRROR.clear()
+    """Віддати новину читачеві."""
+    return _send_post(uid, post, title)
 
 
 def _send_post(uid, post, title):
@@ -2869,10 +2495,6 @@ def watcher():
         try:
             with _lock:
                 round_trip()
-                try:
-                    mirror_release()
-                except Exception as e:
-                    log.warning("дзеркало: відкладені правки — %s", e)
                 if config.HOLD_MINUTES:
                     release_ready()
                 maybe_remind()
@@ -3201,14 +2823,6 @@ def once():
     if stale:
         log.info("пропущено застарілих команд: %s", stale)
     round_trip()
-    try:
-        mirror_release()
-    except Exception as e:
-        log.warning("дзеркало: відкладені правки — %s", e)
-    try:
-        mirror_push()
-    except Exception as e:
-        log.warning("дзеркало: %s", e)
     if config.HOLD_MINUTES:
         release_ready()
     if not in_quiet_hours():
