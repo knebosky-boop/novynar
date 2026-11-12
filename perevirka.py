@@ -5,10 +5,12 @@
 """
 import os, re, sys, time
 import config, novynar as n
-# Тести беруть Миколу (129576564) за зразкового читача; його бойове блокування
-# (BLOCKED, 10.10.2026) тут вимкнене, а саме блокування перевіряє блок «Відрізані».
+# Бойове блокування (BLOCKED) тут вимкнене, а саме блокування перевіряє блок «Відрізані».
 BLOCKED_BOJOVYI = set(getattr(config, "BLOCKED", set()))
 config.BLOCKED = set()
+# Зразковий читач для тестів — вигаданий (12.11.2026: справжніх імен і номерів у публічному коді немає).
+config.NAMES = {555000111: "Тарас"}
+config.NAMES_VOCATIVE = {555000111: "Тарасе"}
 _api_original = n.api          # справжній api() — далі його багато разів підміняють
 _SOURCES_REAL = list(config.SOURCES)   # блок про вимкнення каналів його підміняє
 
@@ -1090,7 +1092,7 @@ block("Нагадування «є що почитати»")
 fresh_db()
 with n.db() as c:
     c.execute("INSERT INTO people VALUES (111,'kate',1,1)")
-    c.execute("INSERT INTO people VALUES (129576564,'',0,1)")
+    c.execute("INSERT INTO people VALUES (555000111,'',0,1)")
 _sent = []
 _real_api = n.api
 n.api = lambda m, **kw: _sent.append((kw.get("chat_id"), kw.get("text", ""),
@@ -1103,7 +1105,7 @@ class _T(_real_dt):
 n.datetime = _T
 config.QUIET_HOURS = (23, 8)
 _real_reminders = config.REMINDER_TIMES
-# 12.09.2026 суддя вимкнула нагадування Миколі — бойовий список порожній.
+# 12.09.2026 суддя вимкнула нагадування — бойовий список порожній.
 # Сам механізм нижче перевіряємо на підставлених годинах, щоб він лишався
 # робочим: захоче повернути — знатимемо, що працює, а не гадатимемо.
 check("у бойовому конфізі нагадування вимкнені (вказівка судді 12.09.2026)",
@@ -1118,7 +1120,7 @@ for _ in range(7):
     n.bump_unread()
 _T.H, _T.M = 8, 8; _sent[:] = []; n.maybe_remind()
 check("новини зʼявились — нагадало", len(_sent) == 1)
-check("нагадування лише читачам, не власниці", _sent and _sent[0][0] == 129576564)
+check("нагадування лише читачам, не власниці", _sent and _sent[0][0] == 555000111)
 check("нагадування зі звуком", _sent and _sent[0][2] is False)
 check("названо кількість новин", _sent and "7 новин" in _sent[0][1])
 check("ранкове вітання", _sent and "Доброго ранку" in _sent[0][1],
@@ -1128,7 +1130,7 @@ check("двічі не нагадує", not _sent)
 n.bump_unread(); n.bump_unread()
 _T.H, _T.M = 20, 4; _sent[:] = []; n.maybe_remind()
 check("ввечері нагадує знову", len(_sent) == 1)
-check("ввечері звертається у кличному відмінку", _sent and "Миколко" in _sent[0][1],
+check("ввечері звертається у кличному відмінку", _sent and "Тарасе" in _sent[0][1],
       re.sub(r"<[^>]+>", "", _sent[0][1]).replace("\n", " ")[:58] if _sent else "")
 check("лічильник почався заново", _sent and "2 новини" in _sent[0][1])
 config.REMINDER_TIMES = ["02:00"]; _T.H, _T.M = 2, 1; _sent[:] = []
@@ -1150,10 +1152,10 @@ n.api = _real_api
 config.REMINDER_TIMES = _real_reminders
 
 block("Імена і відмінювання")
-check("друга звати за іменем", n.person_name(129576564, "") == "Микола")
+check("друга звати за іменем", n.person_name(555000111, "") == "Тарас")
 check("без імені — юзернейм", n.person_name(999, "petro") == "@petro")
 check("без нічого — номер", n.person_name(777, "") == "777")
-check("кличний відмінок для Миколи", n.person_voc(129576564, "") == "Миколко")
+check("кличний відмінок з NAMES_VOCATIVE", n.person_voc(555000111, "") == "Тарасе")
 check("без кличного — звичайне ім'я", n.person_voc(999, "petro") == "petro")
 for _cnt, _want in [(1, "новина"), (2, "новини"), (5, "новин"), (11, "новин"),
                     (21, "новина"), (23, "новини"), (105, "новин")]:
@@ -1252,35 +1254,34 @@ check("/deny відрізає", "Відрізав" in cmd("/deny @petro") and no
 block("Відрізані (/deny без юзернейма, BLOCKED)")
 start(1, "kate")
 with n.db() as c:
-    c.execute("INSERT OR REPLACE INTO people VALUES (129576564,'',0,1)")
+    c.execute("INSERT OR REPLACE INTO people VALUES (555000111,'',0,1)")
     c.execute("INSERT OR REPLACE INTO people VALUES (77,'',0,1)")
-check("бойовий BLOCKED без Миколи (повернуто 15.10.2026)", 129576564 not in BLOCKED_BOJOVYI)
 check("/deny за ім'ям з NAMES стирає рядок",
-      "Відрізав" in cmd("/deny Микола") and not n.is_allowed(129576564, ""))
+      "Відрізав" in cmd("/deny Тарас") and not n.is_allowed(555000111, ""))
 check("після /deny за ім'ям /start не впускає назад",
-      (cmd("/start", 129576564, "") or True) and 129576564 not in [p["user_id"] for p in n.readers()])
+      (cmd("/start", 555000111, "") or True) and 555000111 not in [p["user_id"] for p in n.readers()])
 check("/deny за номером стирає рядок",
       "Відрізав" in cmd("/deny 77") and not n.is_allowed(77, ""))
 check("/deny телефону чи дурниці не бреше «Відрізав»",
       "не знайшов" in cmd("/deny +380 66 000 00 00"))
 check("/deny власницю не чіпає", "не знайшов" in cmd("/deny 1") and n.is_owner(1))
 with n.db() as c:
-    c.execute("INSERT OR REPLACE INTO people VALUES (129576564,'',0,1)")
-config.BLOCKED = {129576564}
+    c.execute("INSERT OR REPLACE INTO people VALUES (555000111,'',0,1)")
+config.BLOCKED = {555000111}
 check("BLOCKED: живий рядок у базі, а новин не шле",
-      129576564 not in [p["user_id"] for p in n.readers()])
-check("BLOCKED: /start не впускає", not n.is_allowed(129576564, ""))
+      555000111 not in [p["user_id"] for p in n.readers()])
+check("BLOCKED: /start не впускає", not n.is_allowed(555000111, ""))
 check("BLOCKED: власниця лишається", 1 in [p["user_id"] for p in n.readers()])
 config.BLOCKED = set()
 # Людину без юзернейма is_allowed() шукає за номером, а підказка «стукав» пропонує
 # /allow Ім'я з NAMES — «Впустив» казало, а /start не пускав (15.10.2026).
 with n.db() as c:
-    c.execute("DELETE FROM people WHERE user_id = 129576564")
-    c.execute("DELETE FROM allowed WHERE username IN ('129576564', 'микола')")
+    c.execute("DELETE FROM people WHERE user_id = 555000111")
+    c.execute("DELETE FROM allowed WHERE username IN ('555000111', 'тарас')")
 check("/allow за ім'ям з NAMES впускає людину без юзернейма",
-      "Впустив" in cmd("/allow Микола") and n.is_allowed(129576564, ""))
+      "Впустив" in cmd("/allow Тарас") and n.is_allowed(555000111, ""))
 check("після /allow за ім'ям /start вмикає новини",
-      (cmd("/start", 129576564, "") or True) and 129576564 in [p["user_id"] for p in n.readers()])
+      (cmd("/start", 555000111, "") or True) and 555000111 in [p["user_id"] for p in n.readers()])
 check("чужому команди не даються", cmd("/add @x", uid=99, uname="hacker") == "" or
       "власниц" in cmd("/add @x", uid=99, uname="hacker"))
 check("/stop вимикає читача", "Зупинив" in cmd("/stop"))
@@ -1717,22 +1718,22 @@ check("старий відбиток тихо замінюється новим"
 fresh_db()
 with n.db() as c:
     c.execute("INSERT INTO people VALUES (1,'kate',1,1)")
-    c.execute("INSERT INTO people VALUES (129576564,'',0,1)")
+    c.execute("INSERT INTO people VALUES (555000111,'',0,1)")
 _notice_blk = getattr(n.config, "EDIT_NOTICE", True)
 n.config.EDIT_NOTICE = True
 _post_blk = dict(_post, id=78, link="https://t.me/tgp_news/78")
 n.broadcast(dict(_post_blk), "Тарас Григорович")
 with n.db() as c:
-    _blk_rows = c.execute("SELECT COUNT(*) k FROM sent_msg WHERE user_id = 129576564").fetchone()["k"]
+    _blk_rows = c.execute("SELECT COUNT(*) k FROM sent_msg WHERE user_id = 555000111").fetchone()["k"]
 check("до блокування новина пішла обом", _blk_rows == 1, "рядків: %s" % _blk_rows)
-config.BLOCKED = {129576564}
+config.BLOCKED = {555000111}
 _calls[:] = []
 n.check_edits("tgp_news", [dict(_post_blk, text=TEXT_NEW)], "Тарас Григорович")
 check("BLOCKED: правку надісланого власниця отримує",
       [1 for m, kw in _calls if m == "editMessageText" and kw.get("chat_id") == 1])
 check("BLOCKED: відрізаному — ні правки, ні записки про неї",
-      not [m for m, kw in _calls if kw.get("chat_id") == 129576564],
-      "викликів йому: %s" % [m for m, kw in _calls if kw.get("chat_id") == 129576564])
+      not [m for m, kw in _calls if kw.get("chat_id") == 555000111],
+      "викликів йому: %s" % [m for m, kw in _calls if kw.get("chat_id") == 555000111])
 config.BLOCKED = set()
 n.config.EDIT_NOTICE = _notice_blk
 

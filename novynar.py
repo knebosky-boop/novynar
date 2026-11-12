@@ -1567,7 +1567,7 @@ def person_name(user_id, username=""):
 
 
 def person_voc(user_id, username=""):
-    """Кличний відмінок: «Миколко». Без нього — звичайне ім'я."""
+    """Кличний відмінок із NAMES_VOCATIVE. Без нього — звичайне ім'я."""
     voc = getattr(config, "NAMES_VOCATIVE", {}).get(int(user_id or 0))
     return voc or person_name(user_id, username).lstrip("@")
 
@@ -2713,7 +2713,7 @@ def handle_owner_command(chat, cmd, arg):
                         "<code>/deny Ім'я</code> або <code>/deny 123456789</code>")
             return
         # Людина без юзернейма знаходиться за номером або за ім'ям з NAMES
-        # (10.10.2026: у Миколи юзернейма нема, і /deny його не брав).
+        # (10.10.2026: читача без юзернейма /deny не брав).
         ids = {uid for uid, name in getattr(config, "NAMES", {}).items()
                if name.lower() == who}
         if who.isdigit():

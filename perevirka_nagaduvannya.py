@@ -5,9 +5,12 @@ import os, sys, datetime as dt
 sys.path.insert(0, os.path.expanduser("~/.claude/Новинар"))
 os.chdir(os.path.expanduser("~/.claude/Новинар"))
 import config, novynar as n
-# Механізм нагадувань міряємо на Миколі як на зразковому читачі; його бойове
+# Механізм нагадувань міряємо на вигаданому зразковому читачі; бойове
 # блокування (BLOCKED, 10.10.2026) перевіряє perevirka.py, блок «Відрізані».
 config.BLOCKED = set()
+# Зразковий читач для тестів — вигаданий (12.11.2026: справжніх імен і номерів у публічному коді немає).
+config.NAMES = {555000111: "Тарас"}
+config.NAMES_VOCATIVE = {555000111: "Тарасе"}
 
 n.DB_PATH = "/tmp/nv_zhyvyi.db"
 if os.path.exists(n.DB_PATH):
@@ -34,7 +37,7 @@ n.requests.get = lambda *a, **kw: _Resp("get")
 n.init_db()
 n.bootstrap_sources()
 with n.db() as _c:
-    _c.execute("INSERT OR REPLACE INTO people (user_id, username, is_owner, active) VALUES (129576564, '', 0, 1)")
+    _c.execute("INSERT OR REPLACE INTO people (user_id, username, is_owner, active) VALUES (555000111, '', 0, 1)")
     _c.execute("INSERT OR REPLACE INTO people (user_id, username, is_owner, active) VALUES (555, '', 1, 1)")
 
 ok = fail = 0
@@ -47,7 +50,7 @@ def check(name, cond, note=""):
 
 print("Бойовий конфіг: REMINDER_TIMES = %r, QUIET_HOURS = %r"
       % (config.REMINDER_TIMES, config.QUIET_HOURS))
-# 12.09.2026: суддя вимкнула нагадування («вимкни нагадування Миколі»), тож
+# 12.09.2026: суддя вимкнула нагадування, тож
 # бойовий список порожній. Механізм від цього не зник — далі женемо його на
 # підставлених годинах, інакше правка, що його зламає, пройде непоміченою.
 check("у бойовому конфізі нагадування вимкнені (вказівка судді 12.09.2026)",
@@ -88,7 +91,7 @@ check("о 08:03 нагадування пішло", len(nag) == 1,
 check("текст ранковий і рахунок точний",
       nag and "Доброго ранку" in nag[0][2] and "30 новин" in nag[0][2])
 check("іде читачеві, а не власниці",
-      nag and nag[0][1] == 129576564 and all(s[1] != 555 for s in nag))
+      nag and nag[0][1] == 555000111 and all(s[1] != 555 for s in nag))
 check("нагадування зі звуком (на відміну від новин)",
       nag and nag[0][3] is False, "disable_notification = %s" % (nag[0][3] if nag else "?"))
 check("лічильник обнулився", int(n.get_state("unread", 0)) == 0,
@@ -149,7 +152,7 @@ n.broadcast({"text": "Перевірка доставки після правк�
              "id": 1, "photo": None}, "Тест")
 novyny = [s for s in SENT if s[0] == "sendMessage"]
 check("новина читачам іде", len(novyny) >= 1, "надіслано %s" % len(novyny))
-chyt = [s for s in novyny if s[1] == 129576564]
+chyt = [s for s in novyny if s[1] == 555000111]
 vlas = [s for s in novyny if s[1] == 555]
 check("новина читачеві йде тихо, як і було",
       chyt and all(s[3] is True for s in chyt),
